@@ -1,0 +1,1121 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>CSV 折線圖產生器</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  --page-bg:#1a1a2e; --text:#eee;
+  --panel:#16213e; --panel-deep:#0f3460;
+  --file-bg:#0f3460; --file-hover:#1a5276; --file-fg:#eee;
+  --btn-bg:#0f3460; --btn-fg:#aaa; --btn-border:#333; --btn-hover:#1a5276; --btn-hover-fg:#fff;
+  --input-bg:#0f3460; --input-fg:#fff; --input-border:#333;
+  --accent:#00d2ff; --muted:#888; --stat:#aaa; --dim:#666; --tick:#ccc;
+  --out-bg:#0d1b33; --result-fg:#ffd93d;
+}
+body.light {
+  --page-bg:#f2f4f8; --text:#1f2430;
+  --panel:#ffffff; --panel-deep:#c9d4e5;
+  --file-bg:#dde6f3; --file-hover:#cbd9ee; --file-fg:#22304a;
+  --btn-bg:#e7ecf5; --btn-fg:#3a4358; --btn-border:#b9c4d6; --btn-hover:#d8e1f0; --btn-hover-fg:#111;
+  --input-bg:#ffffff; --input-fg:#222; --input-border:#b9c4d6;
+  --accent:#0077cc; --muted:#6b7686; --stat:#555e70; --dim:#98a1b0; --tick:#444;
+  --out-bg:#edf1f7; --result-fg:#b8860b;
+}
+body { background: var(--page-bg); color: var(--text); font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; }
+h1 { text-align: center; margin-bottom: 5px; color: var(--accent); font-size: 22px; }
+.subtitle { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 15px; }
+.controls { text-align: center; margin-bottom: 20px; }
+.controls label { background: var(--file-bg); color: var(--file-fg); padding: 10px 20px; border-radius: 6px; cursor: pointer; display: inline-block; font-size: 14px; }
+.controls label:hover { background: var(--file-hover); }
+.controls input { display: none; }
+canvas { max-width: 100%; width: 100% !important; cursor: crosshair; }
+.chart-container { background: var(--panel); border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+.chart-container h3 { margin-bottom: 8px; color: var(--accent); font-size: 16px; }
+.chart-wrap { position: relative; height: 600px; }
+.stats { text-align: center; color: var(--stat); font-size: 12px; margin: 10px 0 20px; }
+.zoom-hint { text-align: right; font-size: 11px; color: var(--dim); margin-top: 6px; }
+.zoom-hint button { background: var(--btn-bg); color: var(--btn-fg); border: 1px solid var(--btn-border); padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-left: 8px; }
+.zoom-hint button:hover { background: var(--btn-hover); color: var(--btn-hover-fg); }
+#loading { display: none; text-align: center; color: #ffd700; font-size: 16px; padding: 40px; }
+#fileName { margin-left: 15px; color: var(--stat); font-size: 13px; }
+#columnConfig { background: var(--panel); border: 1px solid var(--panel-deep); border-radius: 8px; padding: 15px; margin-bottom: 20px; display: none; }
+#columnConfig h4 { color: var(--accent); font-size: 14px; margin-bottom: 10px; }
+#columnConfig label { color: var(--tick); font-size: 12px; margin-right: 15px; cursor: pointer; }
+#columnConfig input[type=checkbox] { margin-right: 3px; }
+#fixedTools { position: fixed; top: 10px; left: 10px; z-index: 999; display: flex; gap: 8px; }
+#plotlineToggle, #themeToggle { background: var(--btn-bg); color: var(--btn-fg); border: 1px solid var(--btn-border); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+#themeToggle:hover { filter: brightness(1.08); }
+#plotlineToggle.on { background: #ffd93d; color: #1a1a2e; border-color: #ffd93d; }
+.plotline-out { margin-top: 8px; padding: 6px 8px; background: var(--out-bg); border: 1px solid var(--panel-deep); border-radius: 6px; display: none; }
+.plotline-out .pl-line { font-family: Consolas, monospace; font-size: 11px; color: #ffd93d; margin: 2px 0; }
+</style>
+</head>
+<body>
+<h1>📈 CSV 折線圖產生器</h1>
+<p class="subtitle">自動偵測時間欄位 + 數字欄位，拖曳/點擊縮放</p>
+<div class="controls">
+  <label for="fileInput">📂 選擇 CSV 檔案</label>
+  <input type="file" id="fileInput" accept=".csv,.txt,*">
+  <span id="fileName">未選擇檔案</span>
+</div>
+<div id="columnConfig"></div>
+<div id="loading">⏳ 正在處理資料，請稍候...</div>
+<div id="charts"></div>
+<div id="fixedTools">
+<button id="plotlineToggle" title="開啟後點擊圖表，於各圖下方讀取該位置數值">📏 Plotline</button>
+<button id="themeToggle" title="切換深色／淺色版面">☀️ 淺色版面</button>
+</div>
+
+<script>
+if (typeof ChartZoom !== 'undefined') Chart.register(ChartZoom);
+
+// All active charts, for TradingView-style X-axis sync
+const allCharts = [];
+let syncSuppress = false;
+
+// Plotline read-value mode
+let plotlineEnabled = false;
+let plotlineCount = 0;
+let plotlineData = null; // { times, series, numericCols, headers, timeCol }
+
+function applyZoomSync(srcChart) {
+  if (syncSuppress) return;
+  const xs = srcChart && srcChart.options && srcChart.options.scales && srcChart.options.scales.x;
+  if (!xs) return;
+  const mn = xs.min, mx = xs.max;
+  const hasZoom = mn !== undefined && mx !== undefined;
+  syncSuppress = true;
+  try {
+    allCharts.forEach(ch => {
+      if (ch === srcChart) return;
+      const s = ch.options && ch.options.scales && ch.options.scales.x;
+      if (!s) return;
+      if (hasZoom) {
+        if (ch.zoomScale) ch.zoomScale('x', { min: mn, max: mx }, 'none');
+      } else {
+        if (ch.resetZoom) ch.resetZoom();
+      }
+    });
+  } finally {
+    syncSuppress = false;
+  }
+}
+
+// Crosshair sync state — mouse X position shared across all charts
+const crosshairState = { x: -1 };
+
+function redrawAllCharts() {
+  allCharts.forEach(ch => { try { ch.draw(); } catch(e) {} });
+}
+
+Chart.register({
+  id: 'crosshairSync',
+  afterDraw(chart) {
+    const ctx = chart.ctx;
+    const xs = chart.scales.x;
+    const ca = chart.chartArea;
+    const marks = chart._plotlineMarks;
+    if (xs && ca && marks && marks.length) {
+      ctx.save();
+      ctx.strokeStyle = chart._plotlineStroke || 'rgba(255,217,61,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      const drawn = [];
+      marks.forEach(function(mk) {
+        const px = xs.getPixelForValue(mk.x);
+        if (px < ca.left || px > ca.right) return;
+        ctx.moveTo(px, ca.top);
+        ctx.lineTo(px, ca.bottom);
+        drawn.push({ px, n: mk.n });
+      });
+      ctx.stroke();
+      ctx.font = 'bold 10px Consolas, monospace';
+      ctx.textAlign = 'left';
+      const labelColor = chart._plotlineLabel || '#ffd93d';
+      drawn.forEach(function(d) {
+        const label = String(d.n).padStart(2, '0');
+        const tx = d.px + 2;
+        const ty = ca.top + 10;
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(tx - 1, ty - 8, tw + 2, 11);
+        ctx.fillStyle = labelColor;
+        ctx.fillText(label, tx, ty);
+      });
+      ctx.restore();
+    }
+    const idx = crosshairState.x;
+    if (idx < 0) return;
+    if (!xs || !ca) return;
+    const px = xs.getPixelForValue(idx);
+    if (px < ca.left || px > ca.right) return;
+    ctx.save();
+    ctx.strokeStyle = isLightTheme() ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(px, ca.top);
+    ctx.lineTo(px, ca.bottom);
+    ctx.stroke();
+    ctx.restore();
+  },
+});
+
+function setupCrosshair(chart, canvas, labels) {
+  canvas.addEventListener('mousemove', function(e) {
+    if (e.buttons & 1) return;
+    const ca = chart.chartArea;
+    if (!ca) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    if (mx < ca.left || mx > ca.right || my < ca.top || my > ca.bottom) {
+      if (crosshairState.x !== -1) { crosshairState.x = -1; redrawAllCharts(); }
+      return;
+    }
+    const xs = chart.scales && chart.scales.x;
+    if (!xs) return;
+    const raw = xs.getValueForPixel(mx);
+    let xIdx;
+    if (typeof raw === 'number') xIdx = Math.round(raw);
+    else if (typeof raw === 'string') xIdx = labels.indexOf(raw);
+    else xIdx = Math.round(parseFloat(raw));
+    if (xIdx < 0 || xIdx >= labels.length) return;
+    if (crosshairState.x !== xIdx) {
+      crosshairState.x = xIdx;
+      redrawAllCharts();
+    }
+  });
+  canvas.addEventListener('mouseleave', function() {
+    if (crosshairState.x !== -1) { crosshairState.x = -1; redrawAllCharts(); }
+  });
+}
+
+const chartsDiv = document.getElementById('charts');
+const loading = document.getElementById('loading');
+const fileInput = document.getElementById('fileInput');
+const fileName = document.getElementById('fileName');
+const columnConfigDiv = document.getElementById('columnConfig');
+const plotlineToggle = document.getElementById('plotlineToggle');
+
+plotlineToggle.addEventListener('click', function() {
+  plotlineEnabled = !plotlineEnabled;
+  this.classList.toggle('on', plotlineEnabled);
+  if (plotlineEnabled) {
+    plotlineCount = 0;
+    allCharts.forEach(function(ch) { if (ch._plotlineMarks) ch._plotlineMarks = []; });
+    document.querySelectorAll('.plotline-out').forEach(function(el) { el.innerHTML = ''; });
+  }
+});
+
+// Theme toggle (dark / light)
+const CHART_THEMES = {
+  dark: { grid:'#0f3460', xtick:'#999', axisTitle:'#aaa', legend:'#ccc' },
+  light:{ grid:'#dde3ec', xtick:'#666', axisTitle:'#555', legend:'#333' },
+};
+function isLightTheme() { return document.body.classList.contains('light'); }
+function ct(key) { return CHART_THEMES[isLightTheme() ? 'light' : 'dark'][key]; }
+const themeToggle = document.getElementById('themeToggle');
+themeToggle.addEventListener('click', function() {
+  document.body.classList.toggle('light');
+  this.textContent = isLightTheme() ? '🌙 深色版面' : '☀️ 淺色版面';
+  const from = isLightTheme() ? CHART_THEMES.dark : CHART_THEMES.light;
+  const to = isLightTheme() ? CHART_THEMES.light : CHART_THEMES.dark;
+  allCharts.forEach(function(ch) {
+    try {
+      Object.keys(ch.options.scales || {}).forEach(function(k) {
+        const s = ch.options.scales[k];
+        if (s.grid && s.grid.color === from.grid) s.grid.color = to.grid;
+        if (s.ticks && s.ticks.color === from.xtick) s.ticks.color = to.xtick;
+        if (s.title && s.title.display && s.title.color === from.axisTitle) s.title.color = to.axisTitle;
+      });
+      const lg = ch.options.plugins && ch.options.plugins.legend && ch.options.plugins.legend.labels;
+      if (lg && lg.color === from.legend) lg.color = to.legend;
+      ch.update('none');
+    } catch(e) {}
+  });
+});
+
+// cols: array of numericCols indices this chart should show values for
+function parseColor(str) {
+  if (!str) return null;
+  let s = String(str).trim();
+  let m = s.match(/^#([0-9a-fA-F]{6})$/);
+  if (m) return { r: parseInt(m[1].slice(0, 2), 16), g: parseInt(m[1].slice(2, 4), 16), b: parseInt(m[1].slice(4, 6), 16) };
+  m = s.match(/^#([0-9a-fA-F]{3})$/);
+  if (m) { const x = m[1]; return { r: parseInt(x[0] + x[0], 16), g: parseInt(x[1] + x[1], 16), b: parseInt(x[2] + x[2], 16) }; }
+  m = s.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  if (m) return { r: +m[1], g: +m[2], b: +m[3] };
+  return null;
+}
+function colorDist(a, b) { return Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2); }
+const PLOTLINE_COLORS = [
+  { stroke: 'rgba(255,217,61,0.6)', label: '#ffd93d', rgb: { r: 255, g: 217, b: 61 } },
+  { stroke: 'rgba(255,110,160,0.6)', label: '#ff6ea0', rgb: { r: 255, g: 110, b: 160 } },
+  { stroke: 'rgba(80,240,140,0.6)', label: '#50f08c', rgb: { r: 80, g: 240, b: 140 } },
+  { stroke: 'rgba(255,255,255,0.6)', label: '#ffffff', rgb: { r: 255, g: 255, b: 255 } },
+  { stroke: 'rgba(180,110,255,0.6)', label: '#b46eff', rgb: { r: 180, g: 110, b: 255 } },
+];
+// In light mode white/yellow lines are hard to see — swap them for darker ones
+function plotlineCandidates() {
+  if (!isLightTheme()) return PLOTLINE_COLORS;
+  return PLOTLINE_COLORS.map(c => {
+    if (c.label === '#ffffff') return { stroke: 'rgba(40,40,40,0.65)', label: '#333333', rgb: { r: 40, g: 40, b: 40 } };
+    if (c.label === '#ffd93d') return { stroke: 'rgba(184,134,11,0.65)', label: '#b8860b', rgb: { r: 184, g: 134, b: 11 } };
+    return c;
+  });
+}
+function setupPlotline(chart, canvas, labels, cols) {
+  const container = canvas.closest('.chart-container');
+  if (!container) return;
+  const outDiv = document.createElement('div');
+  outDiv.className = 'plotline-out';
+  container.appendChild(outDiv);
+  chart._plotlineMarks = [];
+  const lineColors = (chart.data.datasets || []).map(ds => parseColor(ds.borderColor)).filter(Boolean);
+  const CANDS = plotlineCandidates();
+  let picked = CANDS[0];
+  for (const c of CANDS) {
+    const tooClose = lineColors.some(lc => colorDist(lc, c.rgb) < 80);
+    if (!tooClose) { picked = c; break; }
+  }
+  chart._plotlineStroke = picked.stroke;
+  chart._plotlineLabel = picked.label;
+  let dragStartX = null, dragStartY = null;
+  canvas.addEventListener('mousedown', function(e) {
+    if (e.button !== 0) return;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+  });
+  canvas.addEventListener('click', function(e) {
+    if (!plotlineEnabled || !plotlineData) return;
+    if (dragStartX !== null &&
+        (Math.abs(e.clientX - dragStartX) > 4 || Math.abs(e.clientY - dragStartY) > 4)) return;
+    const ca = chart.chartArea;
+    if (!ca) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    if (mx < ca.left || mx > ca.right || my < ca.top || my > ca.bottom) return;
+    const xs = chart.scales && chart.scales.x;
+    if (!xs) return;
+    const raw = xs.getValueForPixel(mx);
+    let xIdx;
+    if (typeof raw === 'number') xIdx = Math.round(raw);
+    else if (typeof raw === 'string') xIdx = labels.indexOf(raw);
+    else xIdx = Math.round(parseFloat(raw));
+    if (xIdx < 0 || xIdx >= labels.length) return;
+    plotlineCount++;
+    const d = plotlineData;
+    const timeStr = d.timeCol >= 0 ? fmtTimeShort(d.times[xIdx]) : '#' + xIdx;
+    const parts = cols.map(ci => {
+      const col = d.numericCols[ci];
+      return d.headers[col] + ': ' + d.series[col][xIdx];
+    });
+    const line = document.createElement('div');
+    line.className = 'pl-line';
+    line.dataset.x = xIdx;
+    line.style.color = picked.label;
+    line.textContent = 'plotline' + String(plotlineCount).padStart(2, '0') + ': [' + timeStr + ']  ' + parts.join('  |  ');
+    const existing = outDiv.querySelectorAll('.pl-line');
+    let insertAfter = null;
+    existing.forEach(function(el) {
+      if (parseInt(el.dataset.x, 10) <= xIdx) insertAfter = el;
+    });
+    if (insertAfter) insertAfter.insertAdjacentElement('afterend', line);
+    else outDiv.insertBefore(line, outDiv.firstChild);
+    outDiv.style.display = 'block';
+    chart._plotlineMarks.push({ x: xIdx, n: plotlineCount });
+    redrawAllCharts();
+  });
+}
+
+function parseTime(str) {
+  if (!str) return null;
+  str = str.replace(/^['"]/, '').trim();
+  // Try ISO format first
+  let ts = new Date(str);
+  if (!isNaN(ts.getTime())) return ts;
+  // Try common formats with slashes
+  const m = str.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) {
+    ts = new Date(+m[1], +m[2]-1, +m[3], +(m[4]||0), +(m[5]||0), +(m[6]||0));
+    if (!isNaN(ts.getTime())) return ts;
+  }
+  // Try MM/DD/YYYY or DD/MM/YYYY
+  const m2 = str.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m2) {
+    ts = new Date(+m2[3], +m2[1]-1, +m2[2], +(m2[4]||0), +(m2[5]||0), +(m2[6]||0));
+    if (!isNaN(ts.getTime())) return ts;
+  }
+  return null;
+}
+
+function fmtTime(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return pad(d.getMonth()+1) + '/' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+function fmtTimeShort(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+// --- Axis manual range edit (double-click on axis) ---
+function secOfDay(d) { return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); }
+function findIdxByTime(times, str) {
+  const m = String(str).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  let target;
+  if (m) target = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3] || 0);
+  else {
+    const d = parseTime(str);
+    if (!d) return null;
+    target = secOfDay(d);
+  }
+  let best = -1, bestDiff = Infinity;
+  for (let i = 0; i < times.length; i++) {
+    if (!(times[i] instanceof Date)) continue;
+    const diff = Math.abs(secOfDay(times[i]) - target);
+    if (diff < bestDiff) { bestDiff = diff; best = i; }
+  }
+  return best;
+}
+function askRange(titleText, labelA, valA, labelB, valB, cb) {
+  document.querySelectorAll('.range-modal').forEach(el => el.remove());
+  const ov = document.createElement('div');
+  ov.className = 'range-modal';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--panel);color:var(--text);border:1px solid var(--accent);border-radius:8px;padding:16px 20px;min-width:280px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,0.35)';
+  box.innerHTML = '<h4 style="color:var(--accent);font-size:14px;margin-bottom:10px">' + titleText + '</h4>'
+    + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">' + labelA + '</label>'
+    + '<input class="rvA" value="' + valA + '" style="width:100%;margin-bottom:8px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">'
+    + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">' + labelB + '</label>'
+    + '<input class="rvB" value="' + valB + '" style="width:100%;margin-bottom:12px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">'
+    + '<div style="text-align:right"><button class="rvOk" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:6px">套用</button>'
+    + '<button class="rvCancel" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:12px">取消</button></div>';
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function(e) { if (e.target === ov) ov.remove(); });
+  box.querySelector('.rvCancel').onclick = function() { ov.remove(); };
+  box.querySelector('.rvOk').onclick = function() {
+    cb(box.querySelector('.rvA').value.trim(), box.querySelector('.rvB').value.trim());
+    ov.remove();
+  };
+  box.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); box.querySelector('.rvOk').click(); }
+    else if (e.key === 'Escape') { ov.remove(); }
+  });
+  const ia = box.querySelector('.rvA');
+  ia.focus(); ia.select();
+}
+function setupAxisEdit(chart, canvas, labels, times, timeCol) {
+  canvas.addEventListener('dblclick', function(e) {
+    const ca = chart.chartArea;
+    if (!ca) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Y axes: hit-test each scale's horizontal band
+    const ids = Object.keys(chart.options.scales || {}).filter(k => k !== 'x');
+    for (const id of ids) {
+      const sc = chart.scales[id];
+      if (!sc) continue;
+      if (my >= ca.top - 5 && my <= ca.bottom + 5 && mx >= sc.left - 3 && mx <= sc.right + 3) {
+        const axTitle = (sc.options.title && sc.options.title.text) || id;
+        const opts = chart.options.scales[id];
+        const defLo = opts.min !== undefined ? opts.min : sc.min;
+        const defHi = opts.max !== undefined ? opts.max : sc.max;
+        askRange('✏️ 手動設定 Y 軸範圍 — ' + axTitle, '起始值', defLo, '結束值', defHi, function(a, b) {
+          const lo = parseFloat(a), hi = parseFloat(b);
+          if (isNaN(lo) || isNaN(hi) || lo >= hi) { alert('請輸入有效數值（起始值需小於結束值）'); return; }
+          opts.min = lo;
+          opts.max = hi;
+          chart.update('none');
+        });
+        return;
+      }
+    }
+
+    // X axis: band below chart area
+    if (mx >= ca.left && mx <= ca.right && my > ca.bottom && my <= ca.bottom + 40) {
+      const xs = chart.options.scales.x;
+      const n = labels.length;
+      let i0 = xs.min !== undefined ? Math.round(xs.min) : 0;
+      let i1 = xs.max !== undefined ? Math.round(xs.max) : n - 1;
+      i0 = Math.max(0, Math.min(i0, n - 1));
+      i1 = Math.max(0, Math.min(i1, n - 1));
+      if (timeCol >= 0) {
+        askRange('⏱️ 手動設定 X 軸時間範圍', '起始時間 (HH:mm:ss)', labels[i0], '結束時間 (HH:mm:ss)', labels[i1], function(a, b) {
+          const j0 = findIdxByTime(times, a);
+          const j1 = findIdxByTime(times, b);
+          if (j0 === null || j1 === null || j0 < 0 || j1 < 0) { alert('時間格式無法辨識，請輸入 HH:mm:ss'); return; }
+          if (j0 >= j1) { alert('起始時間需早於結束時間'); return; }
+          xs.min = j0;
+          xs.max = j1;
+          chart.update('none');
+          applyZoomSync(chart);
+        });
+      } else {
+        askRange('🔢 手動設定 X 軸索引範圍', '起始索引', i0, '結束索引', i1, function(a, b) {
+          const j0 = parseInt(a, 10), j1 = parseInt(b, 10);
+          if (isNaN(j0) || isNaN(j1) || j0 < 0 || j1 >= n || j0 >= j1) { alert('請輸入有效索引（0 ～ ' + (n - 1) + '，起始需小於結束）'); return; }
+          xs.min = j0;
+          xs.max = j1;
+          chart.update('none');
+          applyZoomSync(chart);
+        });
+      }
+    }
+  });
+}
+
+function isNumeric(val) {
+  if (val === null || val === undefined || val === '') return false;
+  return !isNaN(parseFloat(val)) && isFinite(val);
+}
+
+let currentData = null;
+
+fileInput.addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  fileName.textContent = file.name + ' (' + (file.size / 1024).toFixed(0) + ' KB)';
+  loading.style.display = 'block';
+  chartsDiv.innerHTML = '';
+  columnConfigDiv.style.display = 'none';
+  columnConfigDiv.innerHTML = '';
+  allCharts.forEach(ch => { try { ch.destroy(); } catch(e) {} });
+  allCharts.length = 0;
+
+  const reader = new FileReader();
+  reader.onload = function(evt) { parseAndBuild(evt.target.result, file.name); };
+  reader.onerror = function() { loading.style.display = 'none'; };
+  reader.readAsText(file, 'Big5');
+});
+
+function parseAndBuild(csvText, filename) {
+  try {
+    const lines = csvText.trim().split('\n');
+    if (lines.length < 2) { loading.style.display = 'none'; return; }
+
+    const rawHeaders = parseCSVLine(lines[0]);
+    const headers = rawHeaders.map(h => h.replace(/^['"]|['"]$/g, '').trim());
+
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCSVLine(lines[i]);
+      if (cols.length < 2) continue;
+      rows.push(cols.map(c => {
+        c = c.replace(/^['"]|['"]$/g, '').trim();
+        return c;
+      }));
+    }
+    if (rows.length < 2) { loading.style.display = 'none'; return; }
+
+    let timeCol = -1;
+    const timeKeywords = ['time', 'date', 'datetime', 'timestamp', '時間', '日期', '日付'];
+    for (let c = 0; c < headers.length; c++) {
+      const hl = headers[c].toLowerCase();
+      if (timeKeywords.some(kw => hl.includes(kw))) {
+        let parsed = 0;
+        for (let r = 0; r < Math.min(5, rows.length); r++) {
+          if (parseTime(rows[r][c])) parsed++;
+        }
+        if (parsed >= 3) { timeCol = c; break; }
+      }
+    }
+    if (timeCol < 0) {
+      let parsed = 0;
+      for (let r = 0; r < Math.min(5, rows.length); r++) {
+        if (parseTime(rows[r][0])) parsed++;
+      }
+      if (parsed >= 3) timeCol = 0;
+    }
+
+    const numericCols = [];
+    for (let c = 0; c < headers.length; c++) {
+      if (c === timeCol) continue;
+      let numCount = 0;
+      for (let r = 0; r < Math.min(10, rows.length); r++) {
+        if (isNumeric(rows[r][c])) numCount++;
+      }
+      if (numCount >= 8) numericCols.push(c);
+    }
+    if (numericCols.length === 0) { loading.style.display = 'none'; return; }
+
+    const times = [];
+    const series = {};
+    for (const c of numericCols) series[c] = [];
+
+    for (let r = 0; r < rows.length; r++) {
+      let t;
+      if (timeCol >= 0) {
+        t = parseTime(rows[r][timeCol]);
+      } else {
+        t = new Date((r) * 1000);
+      }
+      if (!t) continue;
+      times.push(t);
+      for (const c of numericCols) {
+        series[c].push(isNumeric(rows[r][c]) ? parseFloat(rows[r][c]) : 0);
+      }
+    }
+    if (times.length < 2) { loading.style.display = 'none'; return; }
+
+    const labels = times.map(d => fmtTimeShort(d));
+    currentData = { times, series, labels, numericCols, headers, timeCol };
+
+    loading.style.display = 'none';
+
+    // Show column selection
+    columnConfigDiv.style.display = 'block';
+    columnConfigDiv.innerHTML = '<h4>📊 選擇要顯示的 Y 軸資料</h4>'
+      + '<div id="colCheckboxes" style="margin:8px 0"></div>'
+      + '<div><label style="color:#ffd93d;font-size:13px;cursor:pointer"><input type="checkbox" id="selectAllCols" checked> 全選 / 取消全選</label></div>'
+      + '<div style="margin-top:10px"><button id="confirmCols" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:6px 24px;border-radius:4px;cursor:pointer;font-size:13px">✓ 確認選擇</button></div>';
+
+    const cbDiv = document.getElementById('colCheckboxes');
+    const checkboxes = [];
+    numericCols.forEach((col, i) => {
+      const id = 'colcb_' + i;
+      const lbl = document.createElement('label');
+      lbl.style.cssText = 'color:var(--tick);font-size:13px;margin-right:20px;cursor:pointer;line-height:2';
+      lbl.innerHTML = '<input type="checkbox" id="' + id + '" checked style="margin-right:3px"> ' + headers[col];
+      cbDiv.appendChild(lbl);
+      checkboxes.push({ id, col });
+    });
+
+    document.getElementById('selectAllCols').addEventListener('change', function() {
+      const checked = this.checked;
+      checkboxes.forEach(cb => document.getElementById(cb.id).checked = checked);
+    });
+
+    document.getElementById('confirmCols').addEventListener('click', function() {
+      const selected = checkboxes.filter(cb => document.getElementById(cb.id).checked).map(cb => cb.col);
+      if (selected.length === 0) return;
+      columnConfigDiv.style.display = 'none';
+      buildCharts(currentData.times, currentData.series, currentData.labels, selected, currentData.headers, currentData.timeCol);
+    });
+
+  } catch(e) {
+    loading.style.display = 'none';
+  }
+}
+
+function resetChart(id) {
+  const ch = Chart.getChart(id);
+  if (!ch) return;
+  try { if (ch.resetZoom) ch.resetZoom(); } catch(e) {}
+  // 清除所有軸的手動 min/max（含雙擊設定的 X/Y 範圍、自訂Y軸範圍面板）
+  Object.keys(ch.options.scales || {}).forEach(function(k) {
+    const s = ch.options.scales[k];
+    s.min = undefined;
+    s.max = undefined;
+  });
+  // 移除迴歸線
+  const ri = ch.data.datasets.findIndex(d => d._reg);
+  if (ri >= 0) ch.data.datasets.splice(ri, 1);
+  ch.update('none');
+  // 廣播給其他圖一起還原
+  applyZoomSync(ch);
+  // 清空此圖的自訂Y軸範圍輸入框與斜率結果文字
+  const cont = ch.canvas && ch.canvas.closest('.chart-container');
+  if (cont) {
+    cont.querySelectorAll('input[type=number]').forEach(function(inp) {
+      if (inp.id.indexOf('ymin_') === 0 || inp.id.indexOf('ymax_') === 0) inp.value = '';
+    });
+    cont.querySelectorAll('[data-role="slope-result"]').forEach(function(el) { el.textContent = ''; });
+  }
+}
+
+function calcSlope(dataArr, chart) {
+  const xs = chart.scales.x;
+  if (!xs) return null;
+  const optMin = chart.options.scales.x.min;
+  const optMax = chart.options.scales.x.max;
+  const xMin = optMin !== undefined ? Math.round(optMin) : 0;
+  const xMax = optMax !== undefined ? Math.round(optMax) : dataArr.length - 1;
+  if (xMin >= xMax || xMin < 0 || xMax >= dataArr.length) return null;
+  const d = dataArr.slice(xMin, xMax + 1);
+  const n = d.length;
+  if (n < 3) return null;
+  let sx = 0, sy = 0, sxy = 0, sx2 = 0;
+  for (let i = 0; i < n; i++) { sx += i; sy += d[i]; sxy += i * d[i]; sx2 += i * i; }
+  const m = (n * sxy - sx * sy) / (n * sx2 - sx * sx);
+  const b = (sy - m * sx) / n;
+  const my = sy / n;
+  let ssr = 0, sst = 0;
+  for (let i = 0; i < n; i++) { ssr += (d[i] - (m * i + b)) ** 2; sst += (d[i] - my) ** 2; }
+  const r2 = sst > 0 ? 1 - ssr / sst : 0;
+  return { m, b, r2, n, xMin };
+}
+
+// Simple CSV line parser (handles quoted fields)
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuote = !inQuote;
+    } else if (ch === ',' && !inQuote) {
+      result.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current);
+  return result;
+}
+
+function buildCharts(times, series, labels, numericCols, headers, timeCol) {
+  const nCols = numericCols.length;
+  if (nCols === 0) return;
+  plotlineData = { times, series, numericCols, headers, timeCol };
+
+  const colors = ['#00d2ff', '#ff6b6b', '#ffd93d', '#6bcb77', '#c084fc', '#f97316', '#ec4899', '#14b8a6', '#a78bfa', '#fb923c', '#4ade80', '#38bdf8'];
+
+  // Stats
+  const r2 = v => Math.round(v * 100) / 100;
+  const st = (arr) => {
+    if (arr.length === 0) return { min: 0, max: 0, avg: 0 };
+    return { min: r2(Math.min(...arr)), max: r2(Math.max(...arr)), avg: r2(arr.reduce((a,b) => a+b, 0) / arr.length) };
+  };
+
+  // Combined chart
+  (function() {
+    const c = document.createElement('div');
+    c.className = 'chart-container';
+    c.innerHTML = '<h3>📍 疊圖 — 全部欄位合一</h3><div class="chart-wrap"><canvas id="chAll"></canvas></div><div class="zoom-hint">🖱️ 拖曳縮放(框選XY) · Shift+拖曳平移<button onclick="resetChart(\'chAll\')">↺ 重設</button></div>';
+    chartsDiv.appendChild(c);
+    const canvas = document.getElementById('chAll');
+
+    // Each numeric column gets its own Y-axis, alternating left/right
+    const datasets = [];
+    const scales = {
+      x: {
+        ticks: { color: ct('xtick'), font: { size: 11 }, maxTicksLimit: 20 },
+        grid: { color: ct('grid') },
+        title: { display: true, text: timeCol >= 0 ? '時間' : '索引', color: ct('axisTitle') },
+      },
+    };
+    let ci = 0;
+    const usedColors = new Set();
+    const getColor = () => {
+      let color;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        color = colors[ci % colors.length];
+        ci++;
+        if (!usedColors.has(color)) { usedColors.add(color); return color; }
+      }
+      return colors[ci++ % colors.length];
+    };
+
+    numericCols.forEach((col, i) => {
+      const axisId = 'y' + i;
+      const side = i % 2 === 0 ? 'left' : 'right';
+      const dsColor = getColor();
+      datasets.push({
+        label: headers[col],
+        data: series[col],
+        borderColor: dsColor,
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.1,
+        yAxisID: axisId,
+        segment: {
+          borderColor: function(ctx) {
+            const lo = ctx.chart['_thLo_' + ctx.datasetIndex];
+            const hi = ctx.chart['_thHi_' + ctx.datasetIndex];
+            if (lo === undefined || hi === undefined) return dsColor;
+            const y0 = ctx.p0.parsed.y, y1 = ctx.p1.parsed.y;
+            if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return '#ff4444';
+            return dsColor;
+          },
+          borderWidth: function(ctx) {
+            const lo = ctx.chart['_thLo_' + ctx.datasetIndex];
+            const hi = ctx.chart['_thHi_' + ctx.datasetIndex];
+            if (lo === undefined || hi === undefined) return 2;
+            const y0 = ctx.p0.parsed.y, y1 = ctx.p1.parsed.y;
+            if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return 3;
+            return 2;
+          },
+        },
+      });
+      scales[axisId] = {
+        type: 'linear', display: true, position: side,
+        title: { display: true, text: headers[col], color: dsColor },
+        ticks: { color: dsColor },
+        grid: i > 0 ? { drawOnChartArea: false } : { color: ct('grid') },
+      };
+    });
+
+    try {
+      const chart = new Chart(canvas, {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { mode: 'nearest', axis: 'x', intersect: false },
+          plugins: {
+            legend: {
+              labels: { color: ct('legend'), font: { size: 11 } },
+              onClick: function(e, legendItem, legend) {
+                const idx = legendItem.datasetIndex;
+                const ch = legend.chart;
+                const meta = ch.getDatasetMeta(idx);
+                meta.hidden = meta.hidden === null ? !ch.data.datasets[idx].hidden : null;
+                const axisId = ch.data.datasets[idx].yAxisID;
+                if (axisId && ch.options.scales[axisId]) {
+                  ch.options.scales[axisId].display = meta.hidden ? false : true;
+                }
+                ch.update();
+              },
+            },
+            tooltip: {
+              backgroundColor: '#0f3460', titleColor: '#00d2ff', bodyColor: '#eee',
+              borderColor: '#00d2ff', borderWidth: 1,
+            },
+            zoom: {
+              zoom: {
+                wheel: { enabled: false },
+                drag: { enabled: true, backgroundColor: 'rgba(0,210,255,0.1)', borderColor: '#00d2ff', borderWidth: 1.5 },
+                mode: 'xy',
+                onZoomComplete: function(e) { applyZoomSync(e.chart); },
+              },
+              pan: { enabled: true, mode: 'xy', modifierKey: 'shift', onPanComplete: function(e) { applyZoomSync(e.chart); } },
+            },
+          },
+          scales,
+        },
+      });
+      setupCrosshair(chart, canvas, labels);
+      setupPlotline(chart, canvas, labels, numericCols.map((_, i) => i));
+      setupAxisEdit(chart, canvas, labels, times, timeCol);
+      allCharts.push(chart);
+
+      // Slope button
+      const allHintDiv = c.querySelector('.zoom-hint');
+      const slopeAllBtn = document.createElement('button');
+      slopeAllBtn.textContent = '📈 全部斜率';
+      slopeAllBtn.style.cssText = 'background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px';
+      const resultAllDiv = document.createElement('div');
+      resultAllDiv.setAttribute('data-role', 'slope-result');
+      resultAllDiv.style.cssText = 'text-align:center;color:var(--result-fg);font-size:12px;margin-top:4px;min-height:18px';
+      c.appendChild(resultAllDiv);
+      slopeAllBtn.onclick = function() {
+        const parts = [];
+        numericCols.forEach((col) => {
+          const r = calcSlope(series[col], chart);
+          if (r) parts.push(headers[col] + ': ' + r.m.toFixed(4) + ' (R²=' + r.r2.toFixed(3) + ')');
+          else parts.push(headers[col] + ': N/A');
+        });
+        resultAllDiv.textContent = parts.join('  |  ');
+      };
+      allHintDiv.appendChild(slopeAllBtn);
+
+      // Y-axis range configuration panel
+      const cfgDiv = document.createElement('div');
+      cfgDiv.style.cssText = 'margin-top:10px;display:none';
+      const toggleBtn = document.createElement('button');
+      toggleBtn.textContent = '✏️ 自訂Y軸範圍';
+      toggleBtn.style.cssText = 'background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px';
+      toggleBtn.onclick = function() { cfgDiv.style.display = cfgDiv.style.display === 'none' ? 'block' : 'none'; };
+      c.querySelector('.zoom-hint').appendChild(toggleBtn);
+      c.appendChild(cfgDiv);
+      numericCols.forEach((col, i) => {
+        const axisId = 'y' + i;
+        const sideColor = i % 2 === 0 ? '#ffd93d' : '#00d2ff';
+        const row = document.createElement('div');
+        row.style.cssText = 'margin:4px 0';
+        row.innerHTML = '<span style="color:' + sideColor + ';font-size:11px;display:inline-block;width:110px">' + headers[col] + '</span>'
+          + '<input type="number" step="any" id="ymin_' + i + '" placeholder="最小" style="width:80px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px;margin-right:6px">'
+          + '<input type="number" step="any" id="ymax_' + i + '" placeholder="最大" style="width:80px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px">';
+        cfgDiv.appendChild(row);
+      });
+      const applyBtn = document.createElement('button');
+      applyBtn.textContent = '套用';
+      applyBtn.style.cssText = 'background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:11px;margin-top:6px';
+      applyBtn.onclick = function() {
+        numericCols.forEach((col, i) => {
+          const mn = document.getElementById('ymin_' + i).value;
+          const mx = document.getElementById('ymax_' + i).value;
+          const s = chart.options.scales['y' + i];
+          if (mn !== '') s.min = parseFloat(mn); else delete s.min;
+          if (mx !== '') s.max = parseFloat(mx); else delete s.max;
+        });
+        chart.update();
+      };
+      cfgDiv.appendChild(applyBtn);
+
+      // Threshold config for combined chart
+      const thDiv = document.createElement('div');
+      thDiv.style.cssText = 'margin-top:6px;display:none';
+      const thToggle = document.createElement('button');
+      thToggle.textContent = '🔴 上下限警示';
+      thToggle.style.cssText = 'background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px';
+      thToggle.onclick = function() { thDiv.style.display = thDiv.style.display === 'none' ? 'block' : 'none'; };
+      c.querySelector('.zoom-hint').appendChild(thToggle);
+      c.appendChild(thDiv);
+      numericCols.forEach((col, i) => {
+        const sideColor = i % 2 === 0 ? '#ffd93d' : '#00d2ff';
+        const row = document.createElement('div');
+        row.style.cssText = 'margin:4px 0';
+        row.innerHTML = '<span style="color:' + sideColor + ';font-size:11px;display:inline-block;width:110px">' + headers[col] + '</span>'
+          + '<input type="number" step="any" id="allThLo_' + i + '" placeholder="下限" style="width:80px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px;margin-right:6px">'
+          + '<input type="number" step="any" id="allThHi_' + i + '" placeholder="上限" style="width:80px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px;margin-right:6px">'
+          + '<button class="allThApply" data-i="' + i + '" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--btn-border);padding:2px 12px;border-radius:3px;cursor:pointer;font-size:11px;margin-right:4px">套用</button>'
+          + '<button class="allThReset" data-i="' + i + '" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:2px 12px;border-radius:3px;cursor:pointer;font-size:11px">歸零</button>';
+        thDiv.appendChild(row);
+      });
+      thDiv.addEventListener('click', function(e) {
+        const target = e.target;
+        const i = target.getAttribute('data-i');
+        if (i === null) return;
+        if (target.classList.contains('allThApply')) {
+          const lo = document.getElementById('allThLo_' + i).value;
+          const hi = document.getElementById('allThHi_' + i).value;
+          chart['_thLo_' + i] = lo !== '' ? parseFloat(lo) : undefined;
+          chart['_thHi_' + i] = hi !== '' ? parseFloat(hi) : undefined;
+          chart.update();
+        } else if (target.classList.contains('allThReset')) {
+          document.getElementById('allThLo_' + i).value = '';
+          document.getElementById('allThHi_' + i).value = '';
+          chart['_thLo_' + i] = undefined;
+          chart['_thHi_' + i] = undefined;
+          chart.update();
+        }
+      });
+
+      // 壓差曲線
+      let diffCount = 0;
+      const diffDiv = document.createElement('div');
+      diffDiv.style.cssText = 'margin-top:6px;display:none';
+      const diffToggle = document.createElement('button');
+      diffToggle.textContent = '📊 壓差曲線';
+      diffToggle.style.cssText = 'background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px';
+      diffToggle.onclick = function() { diffDiv.style.display = diffDiv.style.display === 'none' ? 'block' : 'none'; };
+      c.querySelector('.zoom-hint').appendChild(diffToggle);
+      c.appendChild(diffDiv);
+      diffDiv.innerHTML = '<div style="margin:4px 0;font-size:12px;color:var(--stat)">選擇兩個欄位計算壓差（絕對值相減）</div>'
+        + '<div style="margin:4px 0"><select id="diffSelA" style="background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px;margin-right:10px">'
+        + numericCols.map((col, i) => '<option value="' + i + '">' + headers[col] + '</option>').join('')
+        + '</select><span style="color:var(--stat);font-size:11px"> ➖ </span>'
+        + '<select id="diffSelB" style="background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px;margin-left:10px;margin-right:12px">'
+        + numericCols.map((col, i) => '<option value="' + i + '">' + headers[col] + '</option>').join('')
+        + '</select>'
+        + '<button id="diffConfirm" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:2px 14px;border-radius:3px;cursor:pointer;font-size:11px">確認新增</button>'
+        + '</div>';
+      document.getElementById('diffConfirm').addEventListener('click', function() {
+        const ia = parseInt(document.getElementById('diffSelA').value);
+        const ib = parseInt(document.getElementById('diffSelB').value);
+        if (ia === ib) { /* same column, skip */ return; }
+        const colA = numericCols[ia], colB = numericCols[ib];
+        const diffData = series[colA].map((v, i) => Math.abs(v - series[colB][i]));
+        const label = '壓差: ' + headers[colA] + ' - ' + headers[colB];
+        const diffAxisId = 'yDiff' + diffCount;
+        const diffSide = (numericCols.length + diffCount) % 2 === 0 ? 'left' : 'right';
+        const diffColor = isLightTheme() ? '#374151' : '#ffffff';
+        diffCount++;
+        chart.data.datasets.push({
+          label: label,
+          data: diffData,
+          borderColor: diffColor,
+          borderWidth: 2,
+          borderDash: [4, 2],
+          pointRadius: 0,
+          tension: 0.1,
+          yAxisID: diffAxisId,
+        });
+        chart.options.scales[diffAxisId] = {
+          type: 'linear', display: true, position: diffSide,
+          title: { display: true, text: label, color: diffColor },
+          ticks: { color: diffColor },
+          grid: { drawOnChartArea: false },
+        };
+        chart.update();
+        diffDiv.style.display = 'none';
+      });
+    } catch(e) { /**/ }
+  })();
+
+  // Individual charts — arranged in a 2×2 grid, 4 per screen (page)
+  function makeChart(id, title, dataArr, unit, color, parent, colIdx) {
+    const c = document.createElement('div');
+    c.className = 'chart-container';
+    c.innerHTML = '<h3>' + title + '</h3><div class="chart-wrap" style="height:34vh;min-height:180px"><canvas id="' + id + '"></canvas></div><div class="zoom-hint">🖱️ 拖曳縮放(框選XY) · Shift+拖曳平移<button onclick="resetChart(\'' + id + '\')">↺ 重設</button></div>';
+    // Threshold inputs below chart
+    c.innerHTML += '<div class="thresh-row" style="text-align:center;margin-top:6px;font-size:12px;color:var(--stat)">'
+      + '下限: <input type="number" step="any" id="thLo_' + id + '" placeholder="無" style="width:80px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px;margin-right:12px">'
+      + '上限: <input type="number" step="any" id="thHi_' + id + '" placeholder="無" style="width:80px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px;margin-right:8px">'
+      + '<button class="thApply" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--btn-border);padding:2px 12px;border-radius:3px;cursor:pointer;font-size:11px;margin-right:6px">套用</button>'
+      + '<button class="thReset" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:2px 12px;border-radius:3px;cursor:pointer;font-size:11px">歸零</button>'
+      + '</div>';
+    parent.appendChild(c);
+    const canvas = document.getElementById(id);
+
+    try {
+      const chart = new Chart(canvas, {
+        type: 'line',
+        data: { labels, datasets: [{
+          label: title,
+          data: dataArr,
+          borderColor: color,
+          backgroundColor: color + '33',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.1,
+          fill: false,
+          segment: {
+            borderColor: function(ctx) {
+              const lo = ctx.chart._thLo, hi = ctx.chart._thHi;
+              if (lo === undefined || hi === undefined) return color;
+              const y0 = ctx.p0.parsed.y, y1 = ctx.p1.parsed.y;
+              if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return '#ff4444';
+              return color;
+            },
+            borderWidth: function(ctx) {
+              const lo = ctx.chart._thLo, hi = ctx.chart._thHi;
+              if (lo === undefined || hi === undefined) return 2;
+              const y0 = ctx.p0.parsed.y, y1 = ctx.p1.parsed.y;
+              if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return 3;
+              return 2;
+            },
+          },
+        }]},
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { mode: 'nearest', axis: 'x', intersect: false },
+          plugins: {
+            legend: { labels: { color: ct('legend'), font: { size: 11 } } },
+            tooltip: {
+              backgroundColor: '#0f3460', titleColor: '#00d2ff', bodyColor: '#eee',
+              borderColor: '#00d2ff', borderWidth: 1,
+            },
+            zoom: {
+              zoom: {
+                wheel: { enabled: false },
+                drag: { enabled: true, backgroundColor: 'rgba(0,210,255,0.1)', borderColor: '#00d2ff', borderWidth: 1.5 },
+                mode: 'xy',
+                onZoomComplete: function(e) { applyZoomSync(e.chart); },
+              },
+              pan: { enabled: true, mode: 'xy', modifierKey: 'shift', onPanComplete: function(e) { applyZoomSync(e.chart); } },
+            },
+          },
+          scales: {
+            x: {
+              ticks: { color: ct('xtick'), font: { size: 11 }, maxTicksLimit: 20 },
+              grid: { color: ct('grid') },
+              title: { display: true, text: timeCol >= 0 ? '時間' : '索引', color: ct('axisTitle') },
+            },
+            y: {
+              display: true,
+              title: { display: true, text: unit, color: color },
+              ticks: { color: color },
+              grid: { color: ct('grid') },
+            },
+          },
+        },
+      });
+      setupCrosshair(chart, canvas, labels);
+      setupPlotline(chart, canvas, labels, [colIdx]);
+      setupAxisEdit(chart, canvas, labels, times, timeCol);
+      allCharts.push(chart);
+
+      const hintDiv = c.querySelector('.zoom-hint');
+      const slopeBtn = document.createElement('button');
+      slopeBtn.textContent = '📈 斜率';
+      slopeBtn.style.cssText = 'background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px';
+      const resultDiv = document.createElement('div');
+      resultDiv.setAttribute('data-role', 'slope-result');
+      resultDiv.style.cssText = 'text-align:center;color:var(--result-fg);font-size:12px;margin-top:4px;min-height:18px';
+      c.appendChild(resultDiv);
+      slopeBtn.onclick = function() {
+        const r = calcSlope(dataArr, chart);
+        if (!r) { resultDiv.textContent = '請先拖曳縮放選擇範圍'; return; }
+        const regData = new Array(labels.length).fill(null);
+        for (let i = r.xMin; i < r.xMin + r.n; i++) regData[i] = r.m * (i - r.xMin) + r.b;
+        const ri = chart.data.datasets.findIndex(d => d._reg);
+        if (ri >= 0) chart.data.datasets.splice(ri, 1);
+        chart.data.datasets.push({
+          _reg: true, label: '迴歸 (斜率=' + r.m.toFixed(4) + ')', data: regData,
+          borderColor: '#ff0000', borderWidth: 2, borderDash: [6,3], pointRadius: 0, fill: false,
+          yAxisID: chart.data.datasets[0].yAxisID || 'y',
+        });
+        chart.update();
+        resultDiv.textContent = '斜率 = ' + r.m.toFixed(4) + '  截距 = ' + r.b.toFixed(2) + '  R² = ' + r.r2.toFixed(4) + '  (n=' + r.n + ')';
+      };
+      hintDiv.appendChild(slopeBtn);
+
+      // Threshold apply/reset handlers
+      c.querySelector('.thApply').addEventListener('click', function() {
+        const loVal = document.getElementById('thLo_' + id).value;
+        const hiVal = document.getElementById('thHi_' + id).value;
+        chart._thLo = loVal !== '' ? parseFloat(loVal) : undefined;
+        chart._thHi = hiVal !== '' ? parseFloat(hiVal) : undefined;
+        chart.update();
+      });
+      c.querySelector('.thReset').addEventListener('click', function() {
+        document.getElementById('thLo_' + id).value = '';
+        document.getElementById('thHi_' + id).value = '';
+        chart._thLo = undefined;
+        chart._thHi = undefined;
+        chart.update();
+      });
+    } catch(e) { /**/ }
+  }
+
+  const indWrap = document.createElement('div');
+  indWrap.style.cssText = 'margin-bottom:20px';
+  chartsDiv.appendChild(indWrap);
+
+  const perPage = 4;
+  const pages = [];
+  let curPage = null;
+  numericCols.forEach((col, i) => {
+    if (i % perPage === 0) {
+      curPage = document.createElement('div');
+      curPage.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:10px';
+      indWrap.appendChild(curPage);
+      pages.push(curPage);
+    }
+    const colName = headers[col];
+    const s = st(series[col]);
+    makeChart('ch' + i, colName, series[col], colName, colors[i % colors.length], curPage, i);
+  });
+
+  if (pages.length > 1) {
+    const nav = document.createElement('div');
+    nav.style.cssText = 'text-align:center;margin:4px 0 12px';
+    nav.innerHTML = '<button id="indPrev" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:5px 20px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:14px">◀ 上一頁</button>'
+      + '<span id="indPageInfo" style="color:var(--stat);font-size:13px"></span>'
+      + '<button id="indNext" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:5px 20px;border-radius:4px;cursor:pointer;font-size:12px;margin-left:14px">下一頁 ▶</button>';
+    indWrap.insertBefore(nav, indWrap.firstChild);
+    let cur = 0;
+    const showPage = function(i) {
+      cur = Math.max(0, Math.min(i, pages.length - 1));
+      pages.forEach((p, pi) => { p.style.display = pi === cur ? 'grid' : 'none'; });
+      document.getElementById('indPageInfo').textContent = '第 ' + (cur + 1) + ' / ' + pages.length + ' 頁';
+      document.getElementById('indPrev').disabled = cur === 0;
+      document.getElementById('indNext').disabled = cur >= pages.length - 1;
+    };
+    document.getElementById('indPrev').addEventListener('click', function() { showPage(cur - 1); });
+    document.getElementById('indNext').addEventListener('click', function() { showPage(cur + 1); });
+    showPage(0);
+  }
+}
+
+
+</script>
+</body>
+</html>
