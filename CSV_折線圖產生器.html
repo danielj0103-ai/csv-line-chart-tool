@@ -355,6 +355,8 @@ function setupPlotline(chart, canvas, labels, cols) {
 function parseTime(str) {
   if (!str) return null;
   str = str.replace(/^['"]/, '').trim();
+  // 純數值（如 1,2,3 的流水號 sec）不視為日期
+  if (/^\d+(\.\d+)?$/.test(str)) return null;
   // Try ISO format first
   let ts = new Date(str);
   if (!isNaN(ts.getTime())) return ts;
@@ -400,6 +402,14 @@ function getUnitKey(header) {
 // --- Axis manual range edit (double-click on axis) ---
 function secOfDay(d) { return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); }
 function findIdxByTime(times, str) {
+  // 數值 X（如 sec）：直接找最接近的數值
+  if (times.length && typeof times[0] === 'number') {
+    const v = parseFloat(String(str).trim());
+    if (isNaN(v)) return null;
+    let best = -1, bestDiff = Infinity;
+    for (let i = 0; i < times.length; i++) { const diff = Math.abs(times[i] - v); if (diff < bestDiff) { bestDiff = diff; best = i; } }
+    return best;
+  }
   const m = String(str).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
   let target;
   if (m) target = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3] || 0);
@@ -482,12 +492,25 @@ function setupAxisEdit(chart, canvas, labels, times, timeCol) {
       let i1 = xs.max !== undefined ? Math.round(xs.max) : n - 1;
       i0 = Math.max(0, Math.min(i0, n - 1));
       i1 = Math.max(0, Math.min(i1, n - 1));
-      if (timeCol >= 0) {
+      const xIsTime = times[0] instanceof Date;
+      if (xIsTime) {
         askRange('⏱️ 手動設定 X 軸時間範圍', '起始時間 (HH:mm:ss)', labels[i0], '結束時間 (HH:mm:ss)', labels[i1], function(a, b) {
           const j0 = findIdxByTime(times, a);
           const j1 = findIdxByTime(times, b);
           if (j0 === null || j1 === null || j0 < 0 || j1 < 0) { alert('時間格式無法辨識，請輸入 HH:mm:ss'); return; }
           if (j0 >= j1) { alert('起始時間需早於結束時間'); return; }
+          xs.min = j0;
+          xs.max = j1;
+          chart.update('none');
+          applyZoomSync(chart);
+        });
+      } else if (timeCol >= 0) {
+        const xHdr = headers[timeCol] || 'X';
+        askRange('🔢 手動設定 X 軸範圍 — ' + xHdr, '起始值', labels[i0], '結束值', labels[i1], function(a, b) {
+          const j0 = findIdxByTime(times, a);
+          const j1 = findIdxByTime(times, b);
+          if (j0 === null || j1 === null || j0 < 0 || j1 < 0) { alert('數值格式無法辨識'); return; }
+          if (j0 >= j1) { alert('起始值需小於結束值'); return; }
           xs.min = j0;
           xs.max = j1;
           chart.update('none');
@@ -537,7 +560,12 @@ function parseAndBuild(csvText, filename) {
     if (lines.length < 2) { loading.style.display = 'none'; return; }
 
     const rawHeaders = parseCSVLine(lines[0]);
-    const headers = rawHeaders.map(h => h.replace(/^['"]|['"]$/g, '').trim());
+    const headers = rawHeaders.map(h => {
+      let s = h.replace(/^['"]|['"]$/g, '').trim().replace(/^\uFEFF/, '');
+      if (s.includes('ime (Sec)')) s = s.replace(/^.*ime/, 'Time');
+      s = s.replace(/^[^\w\(]+/, '').trim();
+      return s || h.trim();
+    });
 
     const rows = [];
     for (let i = 1; i < lines.length; i++) {
@@ -579,6 +607,23 @@ function parseAndBuild(csvText, filename) {
       }
       if (numCount >= 8) numericCols.push(c);
     }
+    // 若無日期欄，檢查 A 欄是否為數值流水號（如 sec），改以 A 欄作為 X 軸
+    let xCol = timeCol;
+    let xIsTime = timeCol >= 0;
+    if (timeCol < 0) {
+      let cnt0 = 0;
+      for (let r = 0; r < Math.min(10, rows.length); r++) if (isNumeric(rows[r][0])) cnt0++;
+      if (cnt0 >= 8) {
+        xCol = 0;
+        xIsTime = false;
+        headers[0] = headers[0].replace(/^\uFEFF/, '').replace(/^[^\x20-\x7E\u4e00-\u9fa5\(]+/, '').trim() || headers[0].trim();
+        const p = numericCols.indexOf(0);
+        if (p !== -1) numericCols.splice(p, 1);
+      } else {
+        xCol = -1;
+        xIsTime = false;
+      }
+    }
     if (numericCols.length === 0) { loading.style.display = 'none'; return; }
 
     const times = [];
@@ -587,12 +632,16 @@ function parseAndBuild(csvText, filename) {
 
     for (let r = 0; r < rows.length; r++) {
       let t;
-      if (timeCol >= 0) {
-        t = parseTime(rows[r][timeCol]);
+      if (xIsTime) {
+        t = parseTime(rows[r][xCol]);
+        if (!t || isNaN(t.getTime())) continue;
+      } else if (xCol >= 0) {
+        const v = rows[r][xCol];
+        t = isNumeric(v) ? parseFloat(v) : null;
+        if (t === null) continue;
       } else {
-        t = new Date((r) * 1000);
+        t = r;
       }
-      if (!t) continue;
       times.push(t);
       for (const c of numericCols) {
         series[c].push(isNumeric(rows[r][c]) ? parseFloat(rows[r][c]) : 0);
@@ -600,8 +649,9 @@ function parseAndBuild(csvText, filename) {
     }
     if (times.length < 2) { loading.style.display = 'none'; return; }
 
-    const labels = times.map(d => fmtTimeShort(d));
-    currentData = { times, series, labels, numericCols, headers, timeCol };
+    const labels = xIsTime ? times.map(d => fmtTimeShort(d)) : times.map(v => String(v));
+    if (xCol >= 0) headers[xCol] = headers[xCol].replace(/^\uFEFF/, '').replace(/^[^\w\(]+/, '').trim() || headers[xCol].trim();
+    currentData = { times, series, labels, numericCols, headers, timeCol: xCol, xIsTime };
 
     loading.style.display = 'none';
 
@@ -751,7 +801,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       x: {
         ticks: { color: ct('xtick'), font: { size: 11 }, maxTicksLimit: 20 },
         grid: { color: ct('grid') },
-        title: { display: true, text: timeCol >= 0 ? '時間' : '索引', color: ct('axisTitle') },
+        title: { display: true, text: timeCol >= 0 ? (times[0] instanceof Date ? '時間' : headers[timeCol]) : '索引', color: ct('axisTitle') },
       },
     };
     let ci = 0;
@@ -1202,7 +1252,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
             x: {
               ticks: { color: ct('xtick'), font: { size: 11 }, maxTicksLimit: 20 },
               grid: { color: ct('grid') },
-              title: { display: true, text: timeCol >= 0 ? '時間' : '索引', color: ct('axisTitle') },
+              title: { display: true, text: timeCol >= 0 ? (times[0] instanceof Date ? '時間' : headers[timeCol]) : '索引', color: ct('axisTitle') },
             },
             y: {
               display: true,
