@@ -78,10 +78,14 @@ canvas { max-width: 100%; width: 100% !important; cursor: crosshair; }
   <label for="fileInput">📂 選擇 CSV 檔案</label>
   <input type="file" id="fileInput" accept=".csv,.txt,*">
   <span id="fileName">未選擇檔案</span>
+  <label for="ivFileInput" style="margin-left:18px" title="可一次選多個檔案，最多 6 個疊圖比較">⚡ 選擇IV曲線的CSV檔案（可多選）</label>
+  <input type="file" id="ivFileInput" accept=".csv,.txt,*" multiple>
+  <span id="ivFileName">未選擇檔案</span>
 </div>
 <div id="columnConfig"></div>
 <div id="loading">⏳ 正在處理資料，請稍候...</div>
 <div id="charts"></div>
+<div id="ivCharts"></div>
 <div id="fixedTools">
 <button id="plotlineToggle" title="開啟後點擊圖表，於各圖下方讀取該位置數值">📏 Plotline</button>
 <button id="themeToggle" title="切換深色／淺色版面">☀️ 淺色版面</button>
@@ -132,6 +136,7 @@ function redrawAllCharts() {
 Chart.register({
   id: 'crosshairSync',
   afterDraw(chart) {
+    if (chart.$isIV) return;
     const ctx = chart.ctx;
     const xs = chart.scales.x;
     const ca = chart.chartArea;
@@ -256,6 +261,22 @@ themeToggle.addEventListener('click', function() {
       ch.update('none');
     } catch(e) {}
   });
+  // IV 散布圖同步換色
+  if (ivChart) {
+    try {
+      ['x', 'y', 'yPow'].forEach(function(k) {
+        const s = ivChart.options.scales[k];
+        if (!s) return;
+        if (s.grid && s.grid.color === from.grid) s.grid.color = to.grid;
+        if (s.border && s.border.color === from.grid) s.border.color = to.grid;
+        if (s.ticks && s.ticks.color === from.xtick) s.ticks.color = to.xtick;
+        if (s.title && s.title.color === from.axisTitle) s.title.color = to.axisTitle;
+      });
+      const lgl = ivChart.options.plugins.legend && ivChart.options.plugins.legend.labels;
+      if (lgl && lgl.color === from.legend) lgl.color = to.legend;
+      ivChart.update('none');
+    } catch(e) {}
+  }
 });
 
 // cols: array of numericCols indices this chart should show values for
@@ -329,7 +350,7 @@ function setupPlotline(chart, canvas, labels, cols) {
     if (xIdx < 0 || xIdx >= labels.length) return;
     plotlineCount++;
     const d = plotlineData;
-    const timeStr = d.timeCol >= 0 ? fmtTimeShort(d.times[xIdx]) : '#' + xIdx;
+    const timeStr = d.xIsTime ? fmtTimeShort(d.times[xIdx]) : String(d.times[xIdx]);
     const parts = cols.map(ci => {
       const col = d.numericCols[ci];
       return d.headers[col] + ': ' + d.series[col][xIdx];
@@ -426,18 +447,22 @@ function findIdxByTime(times, str) {
   }
   return best;
 }
-function askRange(titleText, labelA, valA, labelB, valB, cb) {
+function askRange(titleText, labelA, valA, labelB, valB, cb, stepVal) {
   document.querySelectorAll('.range-modal').forEach(el => el.remove());
   const ov = document.createElement('div');
   ov.className = 'range-modal';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center';
   const box = document.createElement('div');
   box.style.cssText = 'background:var(--panel);color:var(--text);border:1px solid var(--accent);border-radius:8px;padding:16px 20px;min-width:280px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,0.35)';
+  const stepHtml = (stepVal === null || stepVal === undefined) ? '' : ''
+    + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">刻度間隔（留白 = 自動）</label>'
+    + '<input class="rvC" value="' + stepVal + '" placeholder="例如 0.05" style="width:100%;margin-bottom:12px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">';
   box.innerHTML = '<h4 style="color:var(--accent);font-size:14px;margin-bottom:10px">' + titleText + '</h4>'
     + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">' + labelA + '</label>'
     + '<input class="rvA" value="' + valA + '" style="width:100%;margin-bottom:8px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">'
     + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">' + labelB + '</label>'
     + '<input class="rvB" value="' + valB + '" style="width:100%;margin-bottom:12px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">'
+    + stepHtml
     + '<div style="text-align:right"><button class="rvOk" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:6px">套用</button>'
     + '<button class="rvCancel" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:12px">取消</button></div>';
   ov.appendChild(box);
@@ -445,7 +470,8 @@ function askRange(titleText, labelA, valA, labelB, valB, cb) {
   ov.addEventListener('click', function(e) { if (e.target === ov) ov.remove(); });
   box.querySelector('.rvCancel').onclick = function() { ov.remove(); };
   box.querySelector('.rvOk').onclick = function() {
-    cb(box.querySelector('.rvA').value.trim(), box.querySelector('.rvB').value.trim());
+    const cIn = box.querySelector('.rvC');
+    cb(box.querySelector('.rvA').value.trim(), box.querySelector('.rvB').value.trim(), cIn ? cIn.value.trim() : null);
     ov.remove();
   };
   box.addEventListener('keydown', function(e) {
@@ -454,6 +480,17 @@ function askRange(titleText, labelA, valA, labelB, valB, cb) {
   });
   const ia = box.querySelector('.rvA');
   ia.focus(); ia.select();
+}
+
+// 套用刻度間隔到軸設定（空字串 = 自動）
+function applyAxisStep(opts, step) {
+  if (!opts) return;
+  if (!opts.ticks) opts.ticks = {};
+  if (step === '' || step === null || step === undefined || isNaN(parseFloat(step))) {
+    delete opts.ticks.stepSize;
+  } else {
+    opts.ticks.stepSize = parseFloat(step);
+  }
 }
 function setupAxisEdit(chart, canvas, labels, times, timeCol) {
   canvas.addEventListener('dblclick', function(e) {
@@ -473,13 +510,16 @@ function setupAxisEdit(chart, canvas, labels, times, timeCol) {
         const opts = chart.options.scales[id];
         const defLo = opts.min !== undefined ? opts.min : sc.min;
         const defHi = opts.max !== undefined ? opts.max : sc.max;
-        askRange('✏️ 手動設定 Y 軸範圍 — ' + axTitle, '起始值', defLo, '結束值', defHi, function(a, b) {
+        const isLinear = sc.type === 'linear';
+        const defStep = isLinear && opts.ticks && typeof opts.ticks.stepSize === 'number' ? opts.ticks.stepSize : '';
+        askRange('✏️ 手動設定 Y 軸範圍 — ' + axTitle, '起始值', defLo, '結束值', defHi, function(a, b, step) {
           const lo = parseFloat(a), hi = parseFloat(b);
           if (isNaN(lo) || isNaN(hi) || lo >= hi) { alert('請輸入有效數值（起始值需小於結束值）'); return; }
           opts.min = lo;
           opts.max = hi;
+          if (isLinear) applyAxisStep(opts, step);
           chart.update('none');
-        });
+        }, isLinear ? defStep : null);
         return;
       }
     }
@@ -505,17 +545,21 @@ function setupAxisEdit(chart, canvas, labels, times, timeCol) {
           applyZoomSync(chart);
         });
       } else if (timeCol >= 0) {
-        const xHdr = headers[timeCol] || 'X';
-        askRange('🔢 手動設定 X 軸範圍 — ' + xHdr, '起始值', labels[i0], '結束值', labels[i1], function(a, b) {
+        const xHdr = (chart.options.scales.x.title && chart.options.scales.x.title.text) || 'X';
+        const xSc = chart.scales.x;
+        const xLinear = xSc && xSc.type === 'linear';
+        const xStep = xLinear && xs.ticks && typeof xs.ticks.stepSize === 'number' ? xs.ticks.stepSize : '';
+        askRange('🔢 手動設定 X 軸範圍 — ' + xHdr, '起始值', labels[i0], '結束值', labels[i1], function(a, b, step) {
           const j0 = findIdxByTime(times, a);
           const j1 = findIdxByTime(times, b);
           if (j0 === null || j1 === null || j0 < 0 || j1 < 0) { alert('數值格式無法辨識'); return; }
           if (j0 >= j1) { alert('起始值需小於結束值'); return; }
           xs.min = j0;
           xs.max = j1;
+          if (xLinear) applyAxisStep(xs, step);
           chart.update('none');
           applyZoomSync(chart);
-        });
+        }, xLinear ? xStep : null);
       } else {
         askRange('🔢 手動設定 X 軸索引範圍', '起始索引', i0, '結束索引', i1, function(a, b) {
           const j0 = parseInt(a, 10), j1 = parseInt(b, 10);
@@ -535,6 +579,513 @@ function isNumeric(val) {
   return !isNaN(parseFloat(val)) && isFinite(val);
 }
 
+// ===== IV 曲線圖（X = 電流, Y = 電壓），最多 6 個檔案疊圖比較 =====
+const ivFileInput = document.getElementById('ivFileInput');
+const ivFileName = document.getElementById('ivFileName');
+const ivChartsDiv = document.getElementById('ivCharts');
+const IV_MAX = 6;
+const IV_COLORS = ['#00d2ff', '#ffd93d', '#6bcb77', '#ff6b6b', '#c084fc', '#f97316'];
+let ivChart = null;
+let ivSeries = [];   // [{ name, headers, numericCols, data, color }]
+let ivSel = { xi: -1, yi: -1, tension: 0.25, showLine: true, showPts: false, showPower: false, stepFilter: true, stepTol: 0.05, showGrid: true };
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function ivBaseName(n) { return String(n).replace(/\.[^.]+$/, ''); }
+
+function decodeCsvBuffer(buf) {
+  let text;
+  try { text = new TextDecoder('utf-8').decode(buf); } catch(err) { text = ''; }
+  if (text.indexOf('\uFFFD') !== -1) {
+    try { text = new TextDecoder('big5').decode(buf); } catch(err) { /* keep utf8 */ }
+  }
+  return text.replace(/^\uFEFF/, '');
+}
+
+function guessIVCols(headers, numericCols) {
+  function guess(re) {
+    for (const c of numericCols) if (re.test(headers[c])) return c;
+    return -1;
+  }
+  let xi = guess(/^i\b|^i\s*\(|電流|current|^i_|^i[a-z]*\s*\(/i);
+  let yi = guess(/^v\b|^v\s*\(|電壓|voltage|^v_|^v[a-z]*\s*\(|stack/i);
+  if (xi === -1) xi = numericCols[0];
+  if (yi === -1 || yi === xi) { for (const c of numericCols) if (c !== xi) { yi = c; break; } }
+  // 功率欄（選用）
+  let pi = -1;
+  for (const c of numericCols) {
+    if (c === xi || c === yi) continue;
+    if (/power|watt|瓦|功率|^p\s*\(/i.test(headers[c])) { pi = c; break; }
+  }
+  return { xi: xi, yi: yi, pi: pi };
+}
+
+function parseIVText(csvText, filename) {
+  const rows = [];
+  const lines = csvText.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    const r = parseCSVLine(lines[i]);
+    if (r && r.length) rows.push(r);
+  }
+  if (rows.length < 2) return null;
+  const headers = rows[0].map(function(h) { return h.replace(/^['"]|['"]$/g, '').trim(); });
+  const data = rows.slice(1);
+  const sample = Math.min(20, data.length);
+  const need = Math.max(5, Math.ceil(sample * 0.8));
+  const numericCols = [];
+  for (let c = 0; c < headers.length; c++) {
+    let cnt = 0;
+    for (let r = 0; r < sample; r++) if (isNumeric(data[r][c])) cnt++;
+    if (cnt >= need) numericCols.push(c);
+  }
+  if (numericCols.length < 2) return null;
+  const g = guessIVCols(headers, numericCols);
+  return { name: ivBaseName(filename), headers: headers, numericCols: numericCols, data: data, xi: g.xi, yi: g.yi, pi: g.pi };
+}
+
+function readIVFile(file) {
+  return new Promise(function(resolve) {
+    const reader = new FileReader();
+    reader.onload = function(evt) {
+      try { resolve(parseIVText(decodeCsvBuffer(new Uint8Array(evt.target.result)), file.name)); }
+      catch(err) { resolve(null); }
+    };
+    reader.onerror = function() { resolve(null); };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+ivFileInput.addEventListener('change', async function(e) {
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+  const room = IV_MAX - ivSeries.length;
+  if (room <= 0) {
+    ivFileName.textContent = '已達上限 ' + IV_MAX + ' 個檔案，請先移除部分曲線';
+    e.target.value = '';
+    return;
+  }
+  const take = files.slice(0, room);
+  const skipped = files.length - take.length;
+  const loaded = [];
+  for (const f of take) loaded.push(await readIVFile(f));
+  loaded.forEach(function(s) {
+    if (!s) return;
+    if (ivSeries.length >= IV_MAX) return;
+    s.color = IV_COLORS[ivSeries.length % IV_COLORS.length];
+    ivSeries.push(s);
+  });
+  const okN = loaded.filter(Boolean).length;
+  const msg = '已載入 ' + okN + ' 個檔案（共 ' + ivSeries.length + '/' + IV_MAX + '）';
+  ivFileName.textContent = msg + (skipped ? '，超出上限未載入 ' + skipped + ' 個' : '');
+  e.target.value = '';
+  // 第一次載入時沿用該檔的欄位判斷；之後依第一個檔案為準顯示
+  if (okN && ivSel.xi === -1) {
+    const first = loaded.find(Boolean);
+    ivSel.xi = first.xi; ivSel.yi = first.yi;
+  }
+  renderIVChart();
+});
+
+function ivPointsOf(s, xi, yi) {
+  const pts = [];
+  const d = s.data;
+  // 欄位超出此檔範圍 → 沒有可用的點
+  if (xi >= s.headers.length || yi >= s.headers.length) return pts;
+  for (let r = 0; r < d.length; r++) {
+    const x = parseFloat(d[r][xi]);
+    const y = parseFloat(d[r][yi]);
+    if (isFinite(x) && isFinite(y)) pts.push({ x: x, y: y });
+  }
+  return pts;
+}
+
+function ivRefSeries() { return ivSeries[0] || null; }
+
+// IV 散布圖：雙擊 X／Y 軸設定上下限與刻度間隔（右側功率軸也可）
+function setupIVAxisEdit(chart, canvas) {
+  canvas.addEventListener('dblclick', function(e) {
+    const ca = chart.chartArea;
+    if (!ca) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Y 軸（含右側功率軸 yPow）
+    const yIds = ['y', 'yPow'];
+    for (let i = 0; i < yIds.length; i++) {
+      const id = yIds[i];
+      const sc = chart.scales[id];
+      if (!sc) continue;
+      if (sc.options && sc.options.display === false) continue;
+      if (my >= ca.top - 6 && my <= ca.bottom + 6 && mx >= sc.left - 4 && mx <= sc.right + 4) {
+        const opts = chart.options.scales[id];
+        const title = (sc.options.title && sc.options.title.text) || (id === 'yPow' ? 'Power' : 'Y');
+        const defLo = opts.min !== undefined ? opts.min : sc.min;
+        const defHi = opts.max !== undefined ? opts.max : sc.max;
+        const defStep = (opts.ticks && typeof opts.ticks.stepSize === 'number') ? opts.ticks.stepSize : '';
+        askRange('✏️ 手動設定軸範圍 — ' + title, '起始值', defLo, '結束值', defHi, function(a, b, step) {
+          const lo = parseFloat(a), hi = parseFloat(b);
+          if (isNaN(lo) || isNaN(hi) || lo >= hi) { alert('請輸入有效數值（起始值需小於結束值）'); return; }
+          opts.min = lo;
+          opts.max = hi;
+          applyAxisStep(opts, step);
+          chart.update('none');
+        }, defStep);
+        return;
+      }
+    }
+
+    // X 軸：圖表區下方
+    if (mx >= ca.left && mx <= ca.right && my > ca.bottom && my <= ca.bottom + 40) {
+      const opts = chart.options.scales.x;
+      const sc = chart.scales.x;
+      const defLo = opts.min !== undefined ? opts.min : sc.min;
+      const defHi = opts.max !== undefined ? opts.max : sc.max;
+      const defStep = (opts.ticks && typeof opts.ticks.stepSize === 'number') ? opts.ticks.stepSize : '';
+      const xTitle = (sc.options.title && sc.options.title.text) || 'X';
+      askRange('✏️ 手動設定軸範圍 — ' + xTitle, '起始值', defLo, '結束值', defHi, function(a, b, step) {
+        const lo = parseFloat(a), hi = parseFloat(b);
+        if (isNaN(lo) || isNaN(hi) || lo >= hi) { alert('請輸入有效數值（起始值需小於結束值）'); return; }
+        opts.min = lo;
+        opts.max = hi;
+        applyAxisStep(opts, step);
+        chart.update('none');
+      }, defStep);
+    }
+  });
+}
+
+// 階梯取樣：只保留「定電流平台」（同一電流連續取樣多筆）的最後一筆電壓，
+// 也就是電流改變前的那一筆；平台之間的過渡爬升點不畫，避免畫出垂直震盪線段。
+function ivStepFilter(pts) {
+  if (!ivSel.stepFilter || !pts.length) return pts;
+  const tol = ivSel.stepTol;
+  const groups = [];
+  let g = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    if (Math.abs(pts[i].x - g[0].x) <= tol) g.push(pts[i]);
+    else { groups.push(g); g = [pts[i]]; }
+  }
+  groups.push(g);
+  // 「定電流平台」= 同一電流連續取樣很多筆；門檻隨資料量自動調整
+  const minRun = Math.max(3, Math.ceil(pts.length * 0.005));
+  const kept = groups.filter(function(gr) { return gr.length >= minRun; })
+                    .map(function(gr) { return gr[gr.length - 1]; });
+  // 沒有任何定電流平台 → 代表這份資料每列就是一個獨立取樣點，全部保留
+  if (kept.length < 2) return pts;
+  return kept;
+}
+
+function ivPowerPoints(s, xi) {
+  if (s.pi === undefined || s.pi === -1) return null;
+  const pts = [];
+  const d = s.data;
+  if (xi >= s.headers.length || s.pi >= s.headers.length) return null;
+  for (let r = 0; r < d.length; r++) {
+    const x = parseFloat(d[r][xi]);
+    const y = parseFloat(d[r][s.pi]);
+    if (isFinite(x) && isFinite(y)) pts.push({ x: x, y: y });
+  }
+  return pts.length ? pts : null;
+}
+
+// 沒有 Power 欄時，用 P = I × V 計算功率（與已畫出的 IV 點一致）
+function ivPowerFromIV(ivPts) {
+  if (!ivPts || !ivPts.length) return null;
+  const pts = [];
+  for (let i = 0; i < ivPts.length; i++) pts.push({ x: ivPts[i].x, y: ivPts[i].x * ivPts[i].y });
+  return pts;
+}
+function ivHasPowerCol(s) { return !(s.pi === undefined || s.pi === -1 || s.pi >= s.headers.length); }
+function ivPowerTitle() {
+  const ref = ivRefSeries();
+  if (ref && ivHasPowerCol(ref)) return ref.headers[ref.pi] || 'Power (Watts)';
+  return 'Power (W) = I × V（計算值）';
+}
+
+// 各檔案用「自己的」X/Y 欄位（欄位數不同的檔案也能正確疊圖）
+function ivColsOf(s) { return { xi: s.xi, yi: s.yi }; }
+
+// 使用者切換欄位時：先依欄名比對套用到各檔案，其次才用相同索引
+function ivApplyCols(nx, ny) {
+  const ref = ivRefSeries();
+  if (!ref) return;
+  const norm = function(v) { return String(v || '').trim().toLowerCase(); };
+  const xName = norm(ref.headers[nx]);
+  const yName = norm(ref.headers[ny]);
+  ivSeries.forEach(function(s) {
+    if (nx >= 0 && nx !== s.xi) {
+      if (s.xi === nx) return;
+      let found = -1;
+      for (let c = 0; c < s.headers.length; c++) {
+        if (norm(s.headers[c]) === xName) { found = c; break; }
+      }
+      s.xi = (found !== -1) ? found : (nx < s.headers.length ? nx : s.xi);
+    }
+    if (ny >= 0 && ny !== s.yi) {
+      if (s.yi === ny) return;
+      let found = -1;
+      for (let c = 0; c < s.headers.length; c++) {
+        if (norm(s.headers[c]) === yName) { found = c; break; }
+      }
+      s.yi = (found !== -1) ? found : (ny < s.headers.length ? ny : s.yi);
+    }
+  });
+}
+
+// 依目前選用狀況組出所有 dataset（IV 曲線 + 功率曲線）
+function ivBuildDatasets() {
+  const list = [];
+  const ivDataMap = [];
+  ivSeries.forEach(function(s) {
+    const c = ivColsOf(s);
+    const pts = ivStepFilter(ivPointsOf(s, c.xi, c.yi));
+    ivDataMap.push(pts);
+    list.push({
+      _kind: 'iv',
+      label: s.name,
+      data: pts,
+      parsing: false,
+      showLine: ivSel.showLine,
+      borderColor: s.color,
+      backgroundColor: s.color,
+      borderWidth: ivSel.showLine ? 2 : 0,
+      tension: ivSel.tension,
+      pointRadius: ivSel.showPts ? 2.5 : 0,
+      pointHoverRadius: 4,
+      pointBackgroundColor: s.color,
+      fill: false,
+    });
+  });
+  if (ivSel.showPower) {
+    ivSeries.forEach(function(s, i) {
+      const c = ivColsOf(s);
+      let p, tag;
+      if (ivHasPowerCol(s)) { p = ivStepFilter(ivPowerPoints(s, c.xi)); tag = ' 功率'; }
+      else { p = ivPowerFromIV(ivDataMap[i]); tag = ' 功率（計算 I×V）'; }
+      if (!p) return;
+      list.push({
+        _kind: 'power',
+        label: s.name + tag,
+        data: p,
+        parsing: false,
+        showLine: true,
+        borderColor: s.color,
+        backgroundColor: s.color,
+        borderWidth: 1.6,
+        borderDash: [6, 3],
+        tension: ivSel.tension,
+        pointRadius: ivSel.showPts ? 2 : 0,
+        pointHoverRadius: 4,
+        pointBackgroundColor: s.color,
+        fill: false,
+        yAxisID: 'yPow',
+      });
+    });
+  }
+  return list;
+}
+
+function renderIVChart() {
+  if (ivChart) { try { ivChart.destroy(); } catch(e) {} ivChart = null; }
+  ivChartsDiv.innerHTML = '';
+  if (!ivSeries.length) return;
+  const ref = ivRefSeries();
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-container';
+  wrap.innerHTML = '<h3>⚡ IV 曲線比較（最多 ' + IV_MAX + ' 個檔案疊圖）</h3>'
+    + '<div id="ivSelRow" style="margin-bottom:6px;font-size:12px;color:var(--stat)"></div>'
+    + '<div id="ivOptRow" style="margin-bottom:10px;font-size:12px;color:var(--stat);display:flex;align-items:center;gap:14px;flex-wrap:wrap"></div>'
+    + '<div class="chart-wrap" style="height:64vh;min-height:380px"><canvas id="ivCanvas"></canvas></div>'
+    + '<div class="zoom-hint">🖱️ 拖曳框選縮放 · 滾輪縮放 · Shift+拖曳平移'
+    + '<button type="button" id="ivReset">↺ 重設</button>'
+    + '<button type="button" id="ivClear">🗑️ 清除全部曲線</button></div>';
+  ivChartsDiv.appendChild(wrap);
+
+  // 欄位選擇（依第一個檔案的欄位；套用所有檔案）
+  const selRow = wrap.querySelector('#ivSelRow');
+  const mkOpts = function(exclude) {
+    let s = '';
+    for (const c of ref.numericCols) {
+      if (c === exclude) continue;
+      s += '<option value="' + c + '">' + escHtml(ref.headers[c] || ('欄' + (c + 1))) + '</option>';
+    }
+    return s;
+  };
+  selRow.innerHTML = '<label style="margin-right:16px;display:inline-flex;align-items:center;gap:6px">'
+    + 'X 軸（電流）：<select id="ivSelX" style="background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px">'
+    + mkOpts(ivSel.yi) + '</select></label>'
+    + '<label style="display:inline-flex;align-items:center;gap:6px">'
+    + 'Y 軸（電壓）：<select id="ivSelY" style="background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px">'
+    + mkOpts(ivSel.xi) + '</select></label>'
+    + '<span id="ivPointInfo"></span>';
+  selRow.querySelector('#ivSelX').value = String(ivSel.xi);
+  selRow.querySelector('#ivSelY').value = String(ivSel.yi);
+
+  // 顯示模式控制
+  const optRow = wrap.querySelector('#ivOptRow');
+  optRow.innerHTML = '<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">'
+    + '<input type="checkbox" id="ivShowLine"' + (ivSel.showLine ? ' checked' : '') + '> 連線曲線</label>'
+    + '<label style="display:inline-flex;align-items:center;gap:5px">曲線平滑度 '
+    + '<input type="range" id="ivTension" min="0" max="0.6" step="0.05" value="' + ivSel.tension + '" style="width:110px;vertical-align:middle">'
+    + '<span id="ivTensionVal" style="width:30px">' + ivSel.tension + '</span></label>'
+    + '<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">'
+    + '<input type="checkbox" id="ivShowPts"' + (ivSel.showPts ? ' checked' : '') + '> 顯示資料點</label>'
+    + '<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">'
+    + '<input type="checkbox" id="ivShowPower"' + (ivSel.showPower ? ' checked' : '') + '> 功率曲線 (Power vs I)</label>'
+    + '<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">'
+    + '<input type="checkbox" id="ivStepFilter"' + (ivSel.stepFilter ? ' checked' : '') + ' title="每段電流值只保留該區段的最後一筆電壓（電流改變前的值），去掉重複取樣造成的凸起線段"> 階梯取樣（每段電流留最後一筆）</label>'
+    + '<label style="display:inline-flex;align-items:center;gap:5px">電流合併誤差 '
+    + '<input type="range" id="ivStepTol" min="0.01" max="0.5" step="0.01" value="' + ivSel.stepTol + '" style="width:110px;vertical-align:middle">'
+    + '<span id="ivStepTolVal" style="width:34px">' + ivSel.stepTol + '</span></label>'
+    + '<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">'
+    + '<input type="checkbox" id="ivShowGrid"' + (ivSel.showGrid ? ' checked' : '') + '> 座標線（格線）</label>'
+    + '<span style="color:var(--dim)">點圖例可隱藏／顯示單條曲線</span>';
+
+  const canvas = wrap.querySelector('#ivCanvas');
+  const datasets = ivBuildDatasets();
+  const xTitle = ref.headers[ivSel.xi] || 'X';
+  const yTitle = ref.headers[ivSel.yi] || 'Y';
+  const totalPts = datasets.reduce(function(a, d) { return a + d.data.length; }, 0);
+  selRow.querySelector('#ivPointInfo').textContent = '共 ' + ivSeries.length + ' 條曲線 / ' + totalPts + ' 點';
+
+  ivChart = new Chart(canvas.getContext('2d'), {
+    type: 'scatter',
+    data: { datasets: datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { labels: { color: ct('legend'), font: { size: 11 }, usePointStyle: true } },
+        tooltip: {
+          backgroundColor: '#0f3460', titleColor: '#00d2ff', bodyColor: '#eee',
+          borderColor: '#00d2ff', borderWidth: 1,
+          callbacks: {
+            label: function(c) {
+              return c.dataset.label + '：X = ' + c.raw.x + '　Y = ' + c.raw.y;
+            },
+          },
+        },
+        zoom: {
+          zoom: {
+            wheel: { enabled: true },
+            drag: { enabled: true, backgroundColor: 'rgba(0,210,255,0.1)', borderColor: '#00d2ff', borderWidth: 1.5 },
+            mode: 'xy',
+          },
+          pan: { enabled: true, mode: 'xy', modifierKey: 'shift' },
+        },
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: xTitle, color: ct('axisTitle') },
+          ticks: { color: ct('xtick'), font: { size: 11 } },
+          grid: { color: ct('grid') },
+          border: { color: ct('grid') },
+        },
+        y: {
+          type: 'linear',
+          title: { display: true, text: yTitle, color: ct('axisTitle') },
+          ticks: { color: ct('xtick'), font: { size: 11 } },
+          grid: { color: ct('grid') },
+          border: { color: ct('grid') },
+        },
+        yPow: {
+          type: 'linear',
+          display: ivSel.showPower,
+          position: 'right',
+          title: { display: true, text: ivPowerTitle(), color: '#ff9f43' },
+          ticks: { color: '#ff9f43', font: { size: 11 } },
+          grid: { drawOnChartArea: false },
+          border: { color: ct('grid') },
+        },
+      },
+    },
+  });
+  ivChart.$isIV = true;
+  setupIVAxisEdit(ivChart, canvas);
+
+  const refreshPoints = function() {
+    const fresh = ivBuildDatasets();
+    ivChart.data.datasets = fresh;
+    const n = fresh.reduce(function(a, d) { return a + d.data.length; }, 0);
+    selRow.querySelector('#ivPointInfo').textContent = '共 ' + ivSeries.length + ' 條曲線 / ' + n + ' 點';
+    ivChart.options.scales.yPow.display = ivSel.showPower;
+    ivChart.options.scales.yPow.title.text = ivPowerTitle();
+    ivChart.update('none');
+  };
+
+  optRow.querySelector('#ivShowPower').addEventListener('change', function() {
+    ivSel.showPower = this.checked;
+    refreshPoints();
+  });
+  optRow.querySelector('#ivStepFilter').addEventListener('change', function() {
+    ivSel.stepFilter = this.checked;
+    refreshPoints();
+  });
+  optRow.querySelector('#ivShowGrid').addEventListener('change', function() {
+    ivSel.showGrid = this.checked;
+    ['x', 'y'].forEach(function(k) {
+      const sc = ivChart.options.scales[k];
+      if (sc && sc.grid) sc.grid.display = ivSel.showGrid;
+    });
+    ivChart.update('none');
+  });
+  optRow.querySelector('#ivStepTol').addEventListener('input', function() {
+    ivSel.stepTol = parseFloat(this.value);
+    optRow.querySelector('#ivStepTolVal').textContent = this.value;
+    refreshPoints();
+  });
+
+  optRow.querySelector('#ivShowLine').addEventListener('change', function() {
+    ivSel.showLine = this.checked;
+    ivChart.data.datasets.forEach(function(d) {
+      if (d._kind === 'power') return;
+      d.showLine = ivSel.showLine;
+      d.borderWidth = ivSel.showLine ? 2 : 0;
+    });
+    ivChart.update();
+  });
+  optRow.querySelector('#ivTension').addEventListener('input', function() {
+    ivSel.tension = parseFloat(this.value);
+    optRow.querySelector('#ivTensionVal').textContent = this.value;
+    ivChart.data.datasets.forEach(function(d) { d.tension = ivSel.tension; });
+    ivChart.update('none');
+  });
+  optRow.querySelector('#ivShowPts').addEventListener('change', function() {
+    ivSel.showPts = this.checked;
+    ivChart.data.datasets.forEach(function(d) { d.pointRadius = ivSel.showPts ? (d._kind === 'power' ? 2 : 2.5) : 0; });
+    ivChart.update('none');
+  });
+  selRow.querySelector('#ivSelX').addEventListener('change', function() {
+    const nx = parseInt(this.value, 10);
+    if (isNaN(nx) || nx === ivSel.yi) return;
+    ivSel.xi = nx;
+    ivApplyCols(nx, ivSel.yi);
+    refreshPoints();
+    ivChart.options.scales.x.title.text = ref.headers[nx] || 'X';
+    ivChart.update('none');
+  });
+  selRow.querySelector('#ivSelY').addEventListener('change', function() {
+    const ny = parseInt(this.value, 10);
+    if (isNaN(ny) || ny === ivSel.xi) return;
+    ivSel.yi = ny;
+    ivApplyCols(ivSel.xi, ny);
+    refreshPoints();
+    ivChart.options.scales.y.title.text = ref.headers[ny] || 'Y';
+    ivChart.update('none');
+  });
+  wrap.querySelector('#ivReset').addEventListener('click', function() { if (ivChart) { try { ivChart.resetZoom(); } catch(e) {} } });
+  wrap.querySelector('#ivClear').addEventListener('click', function() {
+    ivSeries = [];
+    ivSel.xi = -1; ivSel.yi = -1;
+    ivFileName.textContent = '未選擇檔案';
+    renderIVChart();
+  });
+}
 let currentData = null;
 
 fileInput.addEventListener('change', function(e) {
@@ -776,7 +1327,7 @@ function parseCSVLine(line) {
 function buildCharts(times, series, labels, numericCols, headers, timeCol) {
   const nCols = numericCols.length;
   if (nCols === 0) return;
-  plotlineData = { times, series, numericCols, headers, timeCol };
+  plotlineData = { times, series, numericCols, headers, timeCol, xIsTime: times[0] instanceof Date };
 
   const colors = ['#00d2ff', '#ff6b6b', '#ffd93d', '#6bcb77', '#c084fc', '#f97316', '#ec4899', '#14b8a6', '#a78bfa', '#fb923c', '#4ade80', '#38bdf8'];
 
