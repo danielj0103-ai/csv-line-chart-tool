@@ -3,93 +3,212 @@
 <head>
 <meta charset="UTF-8">
 <title>CSV 折線圖產生器</title>
+<meta name="author" content="Daniel">
+<meta name="copyright" content="Copyright © 2026 Daniel. All rights reserved.">
+<meta name="description" content="CSV 折線圖產生器 — by Daniel">
+<!--
+  ============================================================
+  CSV 折線圖產生器 (CSV Line Chart Generator)
+  作者 Author : 江國成 / Daniel
+  版本 Version: 2.5
+  說明        : 純前端單檔 HTML，離線可用（Chart.js 走 CDN）
+  授權 License: © 2026 江國成 (Daniel). All rights reserved.
+
+  注意：頁面「使用者可見」處一律僅顯示英文 "Daniel"。
+        中文名稱僅保留於本原始碼註解，不對外顯示。
+  ============================================================
+-->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <style>
+/* ============================================================
+   Apple 原生風格設計系統
+   ============================================================ */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-  --page-bg:#1a1a2e; --text:#eee;
-  --panel:#16213e; --panel-deep:#0f3460;
-  --file-bg:#0f3460; --file-hover:#1a5276; --file-fg:#eee;
-  --btn-bg:#0f3460; --btn-fg:#aaa; --btn-border:#333; --btn-hover:#1a5276; --btn-hover-fg:#fff;
-  --input-bg:#0f3460; --input-fg:#fff; --input-border:#333;
-  --accent:#00d2ff; --muted:#888; --stat:#aaa; --dim:#666; --tick:#ccc;
-  --out-bg:#0d1b33; --result-fg:#ffd93d;
+  /* 深色（預設）：真黑底 + 深灰材質，macOS dark mode */
+  --page-bg:#000000; --text:#f5f5f7;
+  --panel:#1c1c1e; --panel-deep:#2c2c2e;
+  --file-bg:#0a84ff; --file-hover:#0070e0; --file-fg:#ffffff;
+  --btn-bg:#2c2c2e; --btn-fg:#f5f5f7; --btn-border:rgba(255,255,255,0.12);
+  --btn-hover:#3a3a3c; --btn-hover-fg:#ffffff;
+  --input-bg:#1c1c1e; --input-fg:#ffffff; --input-border:rgba(255,255,255,0.16);
+  --accent:#0a84ff;
+  --muted:rgba(235,235,245,0.6); --stat:rgba(235,235,245,0.75);
+  --dim:rgba(235,235,245,0.4); --tick:rgba(235,235,245,0.85);
+  --out-bg:#1c1c1e; --result-fg:#30d158;
+  --hairline:rgba(255,255,255,0.12);
+  --shadow:0 1px 2px rgba(0,0,0,0.4), 0 8px 28px rgba(0,0,0,0.4);
+  --danger:#ff453a;
 }
 body.light {
-  --page-bg:#f2f4f8; --text:#1f2430;
-  --panel:#ffffff; --panel-deep:#c9d4e5;
-  --file-bg:#dde6f3; --file-hover:#cbd9ee; --file-fg:#22304a;
-  --btn-bg:#e7ecf5; --btn-fg:#3a4358; --btn-border:#b9c4d6; --btn-hover:#d8e1f0; --btn-hover-fg:#111;
-  --input-bg:#ffffff; --input-fg:#222; --input-border:#b9c4d6;
-  --accent:#0077cc; --muted:#6b7686; --stat:#555e70; --dim:#98a1b0; --tick:#444;
-  --out-bg:#edf1f7; --result-fg:#b8860b;
+  /* 淺色：systemGroupedBackground + 白卡片 */
+  --page-bg:#f2f2f7; --text:#1d1d1f;
+  --panel:#ffffff; --panel-deep:#f2f2f7;
+  --file-bg:#0071e3; --file-hover:#0077ed; --file-fg:#ffffff;
+  --btn-bg:#f2f2f7; --btn-fg:#1d1d1f; --btn-border:rgba(0,0,0,0.08);
+  --btn-hover:#e5e5ea; --btn-hover-fg:#000000;
+  --input-bg:#ffffff; --input-fg:#1d1d1f; --input-border:rgba(0,0,0,0.16);
+  --accent:#0071e3;
+  --muted:rgba(60,60,67,0.6); --stat:rgba(60,60,67,0.75);
+  --dim:rgba(60,60,67,0.4); --tick:rgba(60,60,67,0.85);
+  --out-bg:#f2f2f7; --result-fg:#1d1d1f;
+  --hairline:rgba(0,0,0,0.08);
+  --shadow:0 1px 2px rgba(0,0,0,0.04), 0 8px 28px rgba(0,0,0,0.06);
+  --danger:#d70015;
 }
-body { background: var(--page-bg); color: var(--text); font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; }
-h1 { text-align: center; margin-bottom: 5px; color: var(--accent); font-size: 22px; }
-.subtitle { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 15px; }
-.controls { text-align: center; margin-bottom: 20px; }
-.controls label { background: var(--file-bg); color: var(--file-fg); padding: 10px 20px; border-radius: 6px; cursor: pointer; display: inline-block; font-size: 14px; }
-.controls label:hover { background: var(--file-hover); }
-.controls input { display: none; }
-canvas { max-width: 100%; width: 100% !important; cursor: crosshair; }
-.chart-container { background: var(--panel); border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
-.chart-container h3 { margin-bottom: 8px; color: var(--accent); font-size: 16px; }
-.chart-wrap { position: relative; height: 600px; }
-.stats { text-align: center; color: var(--stat); font-size: 12px; margin: 10px 0 20px; }
-.zoom-hint { text-align: right; font-size: 11px; color: var(--dim); margin-top: 6px; }
-.zoom-hint button { background: var(--btn-bg); color: var(--btn-fg); border: 1px solid var(--btn-border); padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-left: 8px; }
-.zoom-hint button:hover { background: var(--btn-hover); color: var(--btn-hover-fg); }
-#loading { display: none; text-align: center; color: #ffd700; font-size: 16px; padding: 40px; }
-#fileName { margin-left: 15px; color: var(--stat); font-size: 13px; }
-#columnConfig { background: var(--panel); border: 1px solid var(--panel-deep); border-radius: 8px; padding: 15px; margin-bottom: 20px; display: none; }
-#columnConfig h4 { color: var(--accent); font-size: 14px; margin-bottom: 10px; }
-#columnConfig label { color: var(--tick); font-size: 12px; margin-right: 15px; cursor: pointer; }
-#columnConfig input[type=checkbox] { margin-right: 3px; }
-#fixedTools { position: fixed; top: 10px; left: 10px; z-index: 999; display: flex; gap: 8px; }
-#plotlineToggle, #themeToggle { background: var(--btn-bg); color: var(--btn-fg); border: 1px solid var(--btn-border); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
-#themeToggle:hover { filter: brightness(1.08); }
-#plotlineToggle.on { background: #ffd93d; color: #1a1a2e; border-color: #ffd93d; }
-.plotline-out { margin-top: 8px; padding: 6px 8px; background: var(--out-bg); border: 1px solid var(--panel-deep); border-radius: 6px; display: none; }
-.plotline-out .pl-line { font-family: Consolas, monospace; font-size: 11px; color: #ffd93d; margin: 2px 0; }
-.chart-menu-btn { background: transparent; border: none; color: var(--stat); font-size: 18px; cursor: pointer; padding: 2px 8px; line-height: 1; border-radius: 4px; }
-.chart-menu-btn:hover { color: var(--text); background: var(--btn-bg); }
-.chart-menu { display: none; position: absolute; right: 0; top: 100%; background: var(--panel); border: 1px solid var(--btn-border); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.25); z-index: 10; min-width: 110px; overflow: hidden; }
-.chart-menu-item { padding: 8px 14px; font-size: 12px; color: var(--text); cursor: pointer; white-space: nowrap; }
-.chart-menu-item:hover { background: var(--btn-bg); }
-.chart-menu-item.danger { color: #ff4444; }
-.chart-container { transition: transform 0.35s cubic-bezier(0.25, 0.8, 0.25, 1); }
-.chart-container.dragging { opacity: 0.5; }
-.chart-container.drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
-.sortable-ghost { opacity: 0.35 !important; background: var(--btn-bg) !important; border-radius: 10px; }
-.sortable-chosen { opacity: 0.7; }
-.sortable-drag { opacity: 0.9; box-shadow: 0 12px 28px rgba(0,0,0,0.3); }
-.drag-handle { cursor: grab; color: var(--stat); font-size: 14px; padding: 2px 6px; border-radius: 4px; user-select: none; }
-.drag-handle:active { cursor: grabbing; }
-.drag-handle:hover { color: var(--text); background: var(--btn-bg); }
+body {
+  background:var(--page-bg); color:var(--text);
+  font-family:-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+              "PingFang TC", "Microsoft JhengHei", sans-serif;
+  font-size:15px; line-height:1.5; letter-spacing:-0.01em;
+  padding:36px 20px 64px;
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+}
+::selection { background:var(--accent); color:#fff; }
+
+/* 內容置中，維持閱讀寬度（只作用在最外層容器，不影響 grid 內的個別圖） */
+.controls, #columnConfig, #loading, .stats, #charts, #multiCharts, #ivCharts {
+  max-width:1440px; margin-left:auto; margin-right:auto;
+}
+
+h1 { text-align:center; margin-bottom:6px; color:var(--text); font-size:34px; font-weight:700; letter-spacing:-0.025em; }
+.subtitle { text-align:center; color:var(--muted); font-size:14px; font-weight:400; margin-bottom:28px; letter-spacing:0; }
+
+/* 藥丸按鈕 + focus ring */
+.controls { text-align:center; margin-bottom:28px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:center; }
+.controls label {
+  background:var(--file-bg); color:var(--file-fg);
+  padding:11px 22px; border-radius:980px; cursor:pointer; display:inline-block;
+  font-size:14px; font-weight:590; letter-spacing:-0.01em; user-select:none;
+  box-shadow:0 1px 2px rgba(0,0,0,0.12);
+  transition:transform .18s cubic-bezier(.25,.8,.25,1), filter .18s;
+}
+.controls label:hover { filter:brightness(1.08); }
+.controls label:active { transform:scale(.97); }
+.controls input { display:none; }
+
+canvas { max-width:100%; width:100% !important; cursor:crosshair; }
+
+/* 卡片 */
+.chart-container {
+  background:var(--panel); border:1px solid var(--hairline);
+  border-radius:18px; padding:20px; margin-bottom:20px; box-shadow:var(--shadow);
+}
+.chart-container h3 { margin-bottom:10px; color:var(--text); font-size:17px; font-weight:600; letter-spacing:-0.015em; }
+.chart-wrap { position:relative; height:600px; }
+
+.stats { text-align:center; color:var(--stat); font-size:13px; margin:12px 0 20px; font-variant-numeric:tabular-nums; }
+.zoom-hint { text-align:right; font-size:11px; color:var(--dim); margin-top:8px; }
+.zoom-hint button {
+  background:var(--btn-bg); color:var(--btn-fg); border:none;
+  padding:5px 14px; border-radius:980px; cursor:pointer;
+  font-size:12px; font-weight:500; margin-left:8px; transition:background .18s;
+}
+.zoom-hint button:hover { background:var(--btn-hover); color:var(--btn-hover-fg); }
+
+#loading { display:none; text-align:center; color:var(--accent); font-size:15px; font-weight:500; padding:40px; }
+#fileName { margin-left:6px; color:var(--stat); font-size:13px; }
+#ivFileName { color:var(--stat); font-size:13px; }
+
+/* 欄位選擇面板 */
+#columnConfig {
+  background:var(--panel); border:1px solid var(--hairline); border-radius:18px;
+  padding:20px; margin-bottom:20px; display:none; box-shadow:var(--shadow);
+}
+#columnConfig h4 { color:var(--text); font-size:15px; font-weight:600; margin-bottom:12px; letter-spacing:-0.01em; }
+#columnConfig label { color:var(--tick); font-size:13px; margin-right:15px; cursor:pointer; }
+#columnConfig input[type=checkbox] { margin-right:5px; accent-color:var(--accent); }
+
+/* 浮動工具列：frosted glass */
+#fixedTools {
+  position:fixed; top:16px; left:16px; z-index:999; display:flex; gap:4px;
+  background:var(--panel); border:1px solid var(--hairline); border-radius:980px; padding:5px;
+  backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px);
+  box-shadow:var(--shadow);
+}
+#plotlineToggle, #themeToggle {
+  background:transparent; color:var(--btn-fg); border:none;
+  padding:6px 15px; border-radius:980px; cursor:pointer; font-size:12px; font-weight:500;
+  transition:background .18s, color .18s;
+}
+#plotlineToggle:hover, #themeToggle:hover { background:var(--btn-hover); color:var(--btn-hover-fg); }
+#plotlineToggle.on { background:var(--accent); color:#fff; }
+
+/* Plotline 讀值 */
+.plotline-out {
+  margin-top:10px; padding:10px 12px; background:var(--out-bg);
+  border:1px solid var(--hairline); border-radius:12px; display:none;
+}
+.plotline-out .pl-line {
+  font-family:"SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size:12px; color:var(--result-fg); margin:2px 0; font-variant-numeric:tabular-nums;
+}
+
+/* 圖表選單（popover） */
+.chart-menu-btn {
+  background:transparent; border:none; color:var(--stat); font-size:16px;
+  cursor:pointer; padding:2px 9px; line-height:1; border-radius:8px;
+  transition:background .18s, color .18s;
+}
+.chart-menu-btn:hover { color:var(--text); background:var(--btn-bg); }
+.chart-menu {
+  display:none; position:absolute; right:0; top:100%; margin-top:5px;
+  background:var(--panel); border:1px solid var(--hairline); border-radius:12px;
+  box-shadow:var(--shadow); z-index:10; min-width:132px; overflow:hidden;
+  backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px);
+}
+.chart-menu-item { padding:9px 16px; font-size:13px; color:var(--text); cursor:pointer; white-space:nowrap; }
+.chart-menu-item:hover { background:var(--accent); color:#fff; }
+.chart-menu-item.danger { color:var(--danger); }
+.chart-menu-item.danger:hover { background:var(--danger); color:#fff; }
+
+/* 拖曳排序 */
+.chart-container { transition:transform .35s cubic-bezier(.25,.8,.25,1); }
+.chart-container.dragging { opacity:.5; }
+.chart-container.drop-target { outline:2px solid var(--accent); outline-offset:-4px; border-radius:18px; }
+.sortable-ghost { opacity:.35 !important; background:var(--panel) !important; border-radius:18px; }
+.sortable-chosen { opacity:.7; }
+.sortable-drag { opacity:.9; box-shadow:0 14px 32px rgba(0,0,0,.34); }
+.drag-handle { cursor:grab; color:var(--stat); font-size:13px; padding:3px 8px; border-radius:8px; user-select:none; }
+.drag-handle:active { cursor:grabbing; }
+.drag-handle:hover { color:var(--text); background:var(--btn-bg); }
+
+/* 頁尾作者標籤 */
+.app-footer {
+  margin-top:36px; padding-top:18px; text-align:center;
+  border-top:1px solid var(--hairline);
+  color:var(--dim); font-size:12px; letter-spacing:0;
+}
+.app-footer .author { color:var(--stat); font-weight:500; }
+.app-footer .ver { opacity:.75; margin-left:8px; }
 </style>
 </head>
 <body>
 <h1>📈 CSV 折線圖產生器</h1>
 <p class="subtitle">自動偵測時間欄位 + 數字欄位，拖曳/點擊縮放</p>
 <div class="controls">
-  <label for="fileInput">📂 選擇 CSV 檔案</label>
-  <input type="file" id="fileInput" accept=".csv,.txt,*">
+  <label for="fileInput" title="可一次選多個檔案，最多 6 個疊圖比較">📂 選擇CSV／TXT／FCD檔案(可多選)</label>
+  <input type="file" id="fileInput" accept=".csv,.txt,.tsv,.dat,.fcd,*" multiple>>
   <span id="fileName">未選擇檔案</span>
-  <label for="ivFileInput" style="margin-left:18px" title="可一次選多個檔案，最多 6 個疊圖比較">⚡ 選擇IV曲線的CSV檔案（可多選）</label>
-  <input type="file" id="ivFileInput" accept=".csv,.txt,*" multiple>
+  <label for="ivFileInput" style="margin-left:18px" title="可一次選多個檔案，最多 6 個疊圖比較">⚡ 選擇IV曲線的CSV／FCD檔案（可多選）</label>
+  <input type="file" id="ivFileInput" accept=".csv,.txt,.fcd,*" multiple>
   <span id="ivFileName">未選擇檔案</span>
 </div>
 <div id="columnConfig"></div>
 <div id="loading">⏳ 正在處理資料，請稍候...</div>
 <div id="charts"></div>
+<div id="multiCharts"></div>
 <div id="ivCharts"></div>
 <div id="fixedTools">
 <button id="plotlineToggle" title="開啟後點擊圖表，於各圖下方讀取該位置數值">📏 Plotline</button>
 <button id="themeToggle" title="切換深色／淺色版面">☀️ 淺色版面</button>
 </div>
+<footer class="app-footer">
+  <span class="author">CSV 折線圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v2.5</span>
+</footer>
 
 <script>
 if (typeof ChartZoom !== 'undefined') Chart.register(ChartZoom);
@@ -158,7 +277,7 @@ Chart.register({
       ctx.stroke();
       ctx.font = 'bold 10px Consolas, monospace';
       ctx.textAlign = 'left';
-      const labelColor = chart._plotlineLabel || '#ffd93d';
+      const labelColor = chart._plotlineLabel || '#0a84ff';
       drawn.forEach(function(d) {
         const label = String(d.n).padStart(2, '0');
         const tx = d.px + 2;
@@ -237,8 +356,8 @@ plotlineToggle.addEventListener('click', function() {
 
 // Theme toggle (dark / light)
 const CHART_THEMES = {
-  dark: { grid:'#0f3460', xtick:'#999', axisTitle:'#aaa', legend:'#ccc' },
-  light:{ grid:'#dde3ec', xtick:'#666', axisTitle:'#555', legend:'#333' },
+  dark: { grid:'rgba(255,255,255,0.08)', xtick:'rgba(235,235,245,0.6)', axisTitle:'rgba(235,235,245,0.75)', legend:'rgba(235,235,245,0.8)' },
+  light:{ grid:'rgba(0,0,0,0.08)', xtick:'rgba(60,60,67,0.6)', axisTitle:'rgba(60,60,67,0.75)', legend:'rgba(60,60,67,0.8)' },
 };
 function isLightTheme() { return document.body.classList.contains('light'); }
 function ct(key) { return CHART_THEMES[isLightTheme() ? 'light' : 'dark'][key]; }
@@ -293,18 +412,19 @@ function parseColor(str) {
 }
 function colorDist(a, b) { return Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2); }
 const PLOTLINE_COLORS = [
-  { stroke: 'rgba(255,217,61,0.6)', label: '#ffd93d', rgb: { r: 255, g: 217, b: 61 } },
-  { stroke: 'rgba(255,110,160,0.6)', label: '#ff6ea0', rgb: { r: 255, g: 110, b: 160 } },
-  { stroke: 'rgba(80,240,140,0.6)', label: '#50f08c', rgb: { r: 80, g: 240, b: 140 } },
-  { stroke: 'rgba(255,255,255,0.6)', label: '#ffffff', rgb: { r: 255, g: 255, b: 255 } },
-  { stroke: 'rgba(180,110,255,0.6)', label: '#b46eff', rgb: { r: 180, g: 110, b: 255 } },
+  { stroke: 'rgba(10,132,255,0.75)', label: '#0a84ff', rgb: { r: 10, g: 132, b: 255 } },
+  { stroke: 'rgba(255,55,95,0.75)', label: '#ff375f', rgb: { r: 255, g: 55, b: 95 } },
+  { stroke: 'rgba(48,209,88,0.75)', label: '#30d158', rgb: { r: 48, g: 209, b: 88 } },
+  { stroke: 'rgba(255,255,255,0.7)', label: '#ffffff', rgb: { r: 255, g: 255, b: 255 } },
+  { stroke: 'rgba(191,90,242,0.75)', label: '#bf5af2', rgb: { r: 191, g: 90, b: 242 } },
 ];
 // In light mode white/yellow lines are hard to see — swap them for darker ones
 function plotlineCandidates() {
   if (!isLightTheme()) return PLOTLINE_COLORS;
   return PLOTLINE_COLORS.map(c => {
-    if (c.label === '#ffffff') return { stroke: 'rgba(40,40,40,0.65)', label: '#333333', rgb: { r: 40, g: 40, b: 40 } };
-    if (c.label === '#ffd93d') return { stroke: 'rgba(184,134,11,0.65)', label: '#b8860b', rgb: { r: 184, g: 134, b: 11 } };
+if (c.label === '#ffffff') return { stroke: 'rgba(40,40,40,0.65)', label: '#333333', rgb: { r: 40, g: 40, b: 40 } };
+  if (c.label === '#0a84ff') return { stroke: 'rgba(0,113,227,0.7)', label: '#0071e3', rgb: { r: 0, g: 113, b: 227 } };
+  if (c.label === '#30d158') return { stroke: 'rgba(36,138,61,0.7)', label: '#248a3d', rgb: { r: 36, g: 138, b: 61 } };
     return c;
   });
 }
@@ -530,11 +650,23 @@ function setupAxisEdit(chart, canvas, labels, times, timeCol) {
       const n = labels.length;
       let i0 = xs.min !== undefined ? Math.round(xs.min) : 0;
       let i1 = xs.max !== undefined ? Math.round(xs.max) : n - 1;
-      i0 = Math.max(0, Math.min(i0, n - 1));
-      i1 = Math.max(0, Math.min(i1, n - 1));
+      // 多檔疊圖時較長檔案的補位標籤（'#i'）沒有任何資料 → 範圍上限收到最後一個有效索引
+      let lastReal = n - 1;
+      while (lastReal > 0 && typeof labels[lastReal] === 'string' && labels[lastReal].charAt(0) === '#') lastReal--;
+      i0 = Math.max(0, Math.min(i0, lastReal));
+      i1 = Math.max(0, Math.min(i1, lastReal));
       const xIsTime = times[0] instanceof Date;
+      // 多檔疊圖時 X 軸長度取各檔最大值，較長檔案的補位標籤為 '#i' → 改用時間/數值本身
+      const labelAt = function (i) {
+        const s = labels[i];
+        if (typeof s === 'string' && s.charAt(0) === '#') {
+          if (xIsTime && times[i] instanceof Date) return fmtTime(times[i]);
+          if (i >= 0 && i < times.length) return String(times[i]);
+        }
+        return s;
+      };
       if (xIsTime) {
-        askRange('⏱️ 手動設定 X 軸時間範圍', '起始時間 (HH:mm:ss)', labels[i0], '結束時間 (HH:mm:ss)', labels[i1], function(a, b) {
+        askRange('⏱️ 手動設定 X 軸時間範圍', '起始時間 (HH:mm:ss)', labelAt(i0), '結束時間 (HH:mm:ss)', labelAt(i1), function(a, b) {
           const j0 = findIdxByTime(times, a);
           const j1 = findIdxByTime(times, b);
           if (j0 === null || j1 === null || j0 < 0 || j1 < 0) { alert('時間格式無法辨識，請輸入 HH:mm:ss'); return; }
@@ -549,7 +681,7 @@ function setupAxisEdit(chart, canvas, labels, times, timeCol) {
         const xSc = chart.scales.x;
         const xLinear = xSc && xSc.type === 'linear';
         const xStep = xLinear && xs.ticks && typeof xs.ticks.stepSize === 'number' ? xs.ticks.stepSize : '';
-        askRange('🔢 手動設定 X 軸範圍 — ' + xHdr, '起始值', labels[i0], '結束值', labels[i1], function(a, b, step) {
+        askRange('🔢 手動設定 X 軸範圍 — ' + xHdr, '起始值', labelAt(i0), '結束值', labelAt(i1), function(a, b, step) {
           const j0 = findIdxByTime(times, a);
           const j1 = findIdxByTime(times, b);
           if (j0 === null || j1 === null || j0 < 0 || j1 < 0) { alert('數值格式無法辨識'); return; }
@@ -579,12 +711,249 @@ function isNumeric(val) {
   return !isNaN(parseFloat(val)) && isFinite(val);
 }
 
+// ===== 一般 CSV 多檔疊圖比較（最多 6 個檔案）=====
+let multiBatch = [];
+const MULTI_MAX = 6;
+const MULTI_COLORS = ['#0a84ff', '#ff9f0a', '#30d158', '#ff375f', '#bf5af2', '#64d2ff'];
+let multiFiles = [];      // [{ name, headers, numericCols, series, labels, timeCol, xIsTime }]
+let multiChart = null;
+
+function decodeGenericBuffer(buf) {
+  let text = null;
+  if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) {
+    text = new TextDecoder('utf-8').decode(buf);
+  } else {
+    try { text = new TextDecoder('big5').decode(buf); } catch (e) { text = null; }
+    if (text === null || text.indexOf('\uFFFD') !== -1) {
+      try { text = new TextDecoder('utf-8').decode(buf); } catch (e) { text = ''; }
+    }
+  }
+  return text.replace(/^\uFEFF/, '');
+}
+
+function readFileText(file) {
+  return new Promise(function (resolve) {
+    const reader = new FileReader();
+    reader.onload = function (evt) { resolve(decodeGenericBuffer(new Uint8Array(evt.target.result))); };
+    reader.onerror = function () { resolve(null); };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// 依欄名合併各檔案的欄位（不分大小寫）
+function multiColumnUnion(files) {
+  const map = new Map();
+  files.forEach(function (f) {
+    f.numericCols.forEach(function (c) {
+      const raw = (f.headers[c] || ('欄' + (c + 1))).trim();
+      const key = raw.toLowerCase();
+      if (!map.has(key)) map.set(key, { name: raw, refs: [] });
+      map.get(key).refs.push({ file: f, col: c });
+    });
+  });
+  return Array.from(map.values());
+}
+
+function clearMultiCharts() {
+  if (multiChart) {
+    try { const i = allCharts.indexOf(multiChart); if (i >= 0) allCharts.splice(i, 1); } catch (e) {}
+    try { multiChart.destroy(); } catch (e) {}
+    multiChart = null;
+  }
+  multiFiles = [];
+  const host = document.getElementById('multiCharts');
+  if (host) { host.innerHTML = ''; }
+  columnConfigDiv.style.display = 'none';
+  columnConfigDiv.innerHTML = '';
+  fileName.textContent = '未選擇檔案';
+}
+
+// 多檔：載入並顯示欄位選擇面板
+function loadMultiFiles(fileList) {
+  loading.style.display = 'block';
+  const room = MULTI_MAX;
+  const take = Array.from(fileList).slice(0, room);
+  const skipped = fileList.length - take.length;
+  Promise.all(take.map(function (f) { return readFileText(f).then(function (t) { return { name: f.name, text: t }; }); }))
+    .then(function (items) {
+      multiFiles = [];
+      items.forEach(function (it) {
+        if (!it.text) return;
+        const a = analyzeTable(it.text);
+        if (!a) return;
+        a.name = it.name.replace(/\.[^.]+$/, '');
+        multiFiles.push(a);
+      });
+      loading.style.display = 'none';
+      fileName.textContent = '已載入 ' + multiFiles.length + ' 個檔案（共 ' + multiFiles.length + '/' + MULTI_MAX + '）'
+        + (skipped ? '，超出上限未載入 ' + skipped + ' 個' : '');
+      if (!multiFiles.length) { alert('沒有可用的資料（每個檔案至少要有 2 筆以上資料）'); return; }
+      renderMultiPanel();
+    });
+}
+
+// 多檔欄位選擇面板
+function renderMultiPanel() {
+  clearMultiChartsKeepFiles();   // 只清掉舊圖，保留已解析的 multiFiles
+  const cols = multiColumnUnion(multiFiles);
+  columnConfigDiv.style.display = 'block';
+  let html = '<h4>📊 多檔疊圖：選擇要比較的欄位（共 ' + multiFiles.length + ' 個檔案）</h4>';
+  html += '<div style="font-size:12px;color:var(--stat);margin-bottom:8px">'
+    + '檔案：' + multiFiles.map(function (f) { return escHtml(f.name); }).join('、') + '</div>';
+  html += '<div id="multiCheckboxes" style="columns:180px;column-gap:24px;margin:10px 0"></div>';
+  html += '<div><label style="color:var(--accent);font-size:13px;cursor:pointer"><input type="checkbox" id="multiSelectAll" checked> 全選 / 取消全選</label></div>';
+  html += '<div style="margin-top:10px">'
+    + '<button id="multiConfirm" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:6px 24px;border-radius:4px;cursor:pointer;font-size:13px;margin-right:8px">✓ 確認疊圖</button>'
+    + '<button id="multiClear" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:6px 20px;border-radius:4px;cursor:pointer;font-size:13px">🗑️ 清除全部</button>'
+    + '</div>';
+  columnConfigDiv.innerHTML = html;
+
+  // 依單位分組排列（與單檔一致）
+  const groups = {};
+  const order = [];
+  cols.forEach(function (c) {
+    const key = getUnitKey(c.name);
+    const norm = key.toLowerCase();
+    if (!(norm in groups)) { groups[norm] = []; order.push(norm); }
+    groups[norm].push(c);
+  });
+  const sorted = [];
+  order.forEach(function (n) { groups[n].forEach(function (c) { sorted.push(c); }); });
+
+  const box = document.getElementById('multiCheckboxes');
+  const checks = [];
+  sorted.forEach(function (c, i) {
+    const id = 'mcb_' + i;
+    const lbl = document.createElement('label');
+    const fileList = c.refs.map(function (r) { return r.file.name; }).join('、');
+    lbl.style.cssText = 'display:flex;align-items:center;gap:6px;color:var(--tick);font-size:13px;cursor:pointer;padding:2px 0;break-inside:avoid';
+    lbl.innerHTML = '<input type="checkbox" id="' + id + '" checked style="margin:0"> <span>' + escHtml(c.name)
+      + ' <span style="color:var(--dim);font-size:11px">（' + escHtml(fileList) + '）</span></span>';
+    lbl.title = c.name;
+    box.appendChild(lbl);
+    checks.push({ id: id, col: c });
+  });
+
+  document.getElementById('multiSelectAll').addEventListener('change', function () {
+    const on = this.checked;
+    checks.forEach(function (c) { document.getElementById(c.id).checked = on; });
+  });
+  document.getElementById('multiConfirm').addEventListener('click', function () {
+    const picked = checks.filter(function (c) { return document.getElementById(c.id).checked; });
+    if (!picked.length) { alert('請至少選擇一個欄位'); return; }
+    columnConfigDiv.style.display = 'none';
+    buildMultiChart(picked.map(function (p) { return p.col; }));
+  });
+  document.getElementById('multiClear').addEventListener('click', clearMultiCharts);
+}
+
+function buildMultiChart(selectedCols) {
+  clearMultiChartsKeepFiles();
+  const host = document.getElementById('multiCharts');
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-container';
+  wrap.innerHTML = '<h3>📈 多檔疊圖比較（' + multiFiles.length + ' 個檔案 / ' + selectedCols.length + ' 個欄位）</h3>'
+    + '<div class="chart-wrap" style="height:62vh;min-height:380px"><canvas id="multiCanvas"></canvas></div>'
+    + '<div class="zoom-hint">🖱️ 拖曳縮放(框選XY) · Shift+拖曳平移'
+    + '<button id="multiReset">↺ 重設</button>'
+    + '<button id="multiClear2">🗑️ 清除全部曲線</button></div>';
+  host.appendChild(wrap);
+  const canvas = wrap.querySelector('#multiCanvas');
+
+  // X 軸以第一個檔案的標籤為準；長度取各檔最大值，避免資料被截斷
+  const labels0 = multiFiles[0].labels;
+  let maxLen = labels0.length;
+  multiFiles.forEach(function (f) { if (f.labels.length > maxLen) maxLen = f.labels.length; });
+  const labels = labels0.slice();
+  for (let i = labels0.length; i < maxLen; i++) labels.push('#' + i);
+  const datasets = [];
+  let colorIdx = 0;
+  selectedCols.forEach(function (col) {
+    col.refs.forEach(function (ref) {
+      const data = ref.file.series[ref.col] || [];
+      const n = Math.min(data.length, labels.length);
+      const arr = new Array(labels.length).fill(null);
+      for (let i = 0; i < n; i++) arr[i] = data[i];
+      datasets.push({
+        label: ref.file.name + '：' + col.name,
+        data: arr,
+        borderColor: MULTI_COLORS[colorIdx % MULTI_COLORS.length],
+        backgroundColor: MULTI_COLORS[colorIdx % MULTI_COLORS.length],
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        tension: 0.1,
+        spanGaps: false,
+        fill: false,
+      });
+      colorIdx++;
+    });
+  });
+
+  const xTitle = multiFiles[0].xIsTime ? '時間' : (multiFiles[0].timeCol >= 0 ? (multiFiles[0].headers[multiFiles[0].timeCol] || 'X') : '索引');
+  multiChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { labels: labels, datasets: datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'nearest', axis: 'x', intersect: false },
+      plugins: {
+        legend: { labels: { color: ct('legend'), font: { size: 11 } } },
+        tooltip: {
+          backgroundColor: 'rgba(28,28,30,0.94)', titleColor: '#0a84ff', bodyColor: '#f5f5f7',
+          borderColor: 'rgba(255,255,255,0.14)', borderWidth: 1,
+        },
+        zoom: {
+          zoom: {
+            wheel: { enabled: false },
+            drag: { enabled: true, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
+            mode: 'xy',
+            onZoomComplete: function (e) { applyZoomSync(e.chart); },
+          },
+          pan: { enabled: true, mode: 'xy', modifierKey: 'shift', onPanComplete: function (e) { applyZoomSync(e.chart); } },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: ct('xtick'), font: { size: 11 }, maxTicksLimit: 20 },
+          grid: { color: ct('grid') },
+          title: { display: true, text: xTitle, color: ct('axisTitle') },
+        },
+        y: {
+          display: true,
+          title: { display: true, text: '數值', color: ct('axisTitle') },
+          ticks: { color: ct('xtick') },
+          grid: { color: ct('grid') },
+        },
+      },
+    },
+  });
+  setupCrosshair(multiChart, canvas, labels);
+  // 雙擊 X／Y 軸可手動設定範圍與間隔（時間軸以第一個檔案的時間序列為準）
+  setupAxisEdit(multiChart, canvas, labels, multiFiles[0].times, multiFiles[0].timeCol);
+  allCharts.push(multiChart);
+
+  wrap.querySelector('#multiReset').addEventListener('click', function () {
+    if (multiChart) { try { multiChart.resetZoom(); } catch (e) {} }
+  });
+  wrap.querySelector('#multiClear2').addEventListener('click', clearMultiCharts);
+}
+
+function clearMultiChartsKeepFiles() {
+  if (multiChart) {
+    try { const i = allCharts.indexOf(multiChart); if (i >= 0) allCharts.splice(i, 1); } catch (e) {}
+    try { multiChart.destroy(); } catch (e) {}
+    multiChart = null;
+  }
+  const host = document.getElementById('multiCharts');
+  if (host) host.innerHTML = '';
+}
 // ===== IV 曲線圖（X = 電流, Y = 電壓），最多 6 個檔案疊圖比較 =====
 const ivFileInput = document.getElementById('ivFileInput');
 const ivFileName = document.getElementById('ivFileName');
 const ivChartsDiv = document.getElementById('ivCharts');
 const IV_MAX = 6;
-const IV_COLORS = ['#00d2ff', '#ffd93d', '#6bcb77', '#ff6b6b', '#c084fc', '#f97316'];
+const IV_COLORS = ['#0a84ff', '#ff9f0a', '#30d158', '#ff375f', '#bf5af2', '#64d2ff'];
 let ivChart = null;
 let ivSeries = [];   // [{ name, headers, numericCols, data, color }]
 let ivSel = { xi: -1, yi: -1, tension: 0.25, showLine: true, showPts: false, showPower: false, stepFilter: true, stepTol: 0.05, showGrid: true };
@@ -623,10 +992,13 @@ function guessIVCols(headers, numericCols) {
 
 function parseIVText(csvText, filename) {
   const rows = [];
-  const lines = csvText.split(/\r?\n/);
+  // 先切除前導檔頭（.fcd 等），分隔符也要依「切除後」的內容判斷
+  const stripped = stripPreamble(csvText);
+  const lines = stripped.split(/\r?\n/);
+  const delim = detectDelim(stripped);
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
-    const r = parseCSVLine(lines[i]);
+    const r = parseCSVLine(lines[i], delim);
     if (r && r.length) rows.push(r);
   }
   if (rows.length < 2) return null;
@@ -698,6 +1070,9 @@ function ivPointsOf(s, xi, yi) {
     const y = parseFloat(d[r][yi]);
     if (isFinite(x) && isFinite(y)) pts.push({ x: x, y: y });
   }
+  // 依 X 由小到大排序：資料可能是「定電流→掃描→回定電流」等非單調順序，
+  // 不排序會讓 Chart.js（parsing:false）算錯 X 軸範圍
+  pts.sort(function(a, b) { return a.x - b.x; });
   return pts;
 }
 
@@ -771,9 +1146,13 @@ function ivStepFilter(pts) {
   groups.push(g);
   // 「定電流平台」= 同一電流連續取樣很多筆；門檻隨資料量自動調整
   const minRun = Math.max(3, Math.ceil(pts.length * 0.005));
+  // 只有當「重複取樣的平台點」占絕大多數（≥80%）時，才視為階梯資料而只留平台末筆。
+  // 否則（例如少量取樣、含真正掃描段的資料）保留全部點，避免把曲線丟掉。
+  let longPts = 0;
+  groups.forEach(function(gr) { if (gr.length >= minRun) longPts += gr.length; });
+  if (longPts < pts.length * 0.8) return pts;
   const kept = groups.filter(function(gr) { return gr.length >= minRun; })
                     .map(function(gr) { return gr[gr.length - 1]; });
-  // 沒有任何定電流平台 → 代表這份資料每列就是一個獨立取樣點，全部保留
   if (kept.length < 2) return pts;
   return kept;
 }
@@ -788,7 +1167,9 @@ function ivPowerPoints(s, xi) {
     const y = parseFloat(d[r][s.pi]);
     if (isFinite(x) && isFinite(y)) pts.push({ x: x, y: y });
   }
-  return pts.length ? pts : null;
+  if (!pts.length) return null;
+  pts.sort(function(a, b) { return a.x - b.x; });
+  return pts;
 }
 
 // 沒有 Power 欄時，用 P = I × V 計算功率（與已畫出的 IV 點一致）
@@ -961,8 +1342,8 @@ function renderIVChart() {
       plugins: {
         legend: { labels: { color: ct('legend'), font: { size: 11 }, usePointStyle: true } },
         tooltip: {
-          backgroundColor: '#0f3460', titleColor: '#00d2ff', bodyColor: '#eee',
-          borderColor: '#00d2ff', borderWidth: 1,
+          backgroundColor: 'rgba(28,28,30,0.94)', titleColor: '#0a84ff', bodyColor: '#f5f5f7',
+          borderColor: 'rgba(255,255,255,0.14)', borderWidth: 1,
           callbacks: {
             label: function(c) {
               return c.dataset.label + '：X = ' + c.raw.x + '　Y = ' + c.raw.y;
@@ -971,8 +1352,8 @@ function renderIVChart() {
         },
         zoom: {
           zoom: {
-            wheel: { enabled: true },
-            drag: { enabled: true, backgroundColor: 'rgba(0,210,255,0.1)', borderColor: '#00d2ff', borderWidth: 1.5 },
+            wheel: { enabled: false },   // 與折線圖一致：不用滾輪縮放，改用拖曳框選
+            drag: { enabled: true, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
             mode: 'xy',
           },
           pan: { enabled: true, mode: 'xy', modifierKey: 'shift' },
@@ -997,8 +1378,8 @@ function renderIVChart() {
           type: 'linear',
           display: ivSel.showPower,
           position: 'right',
-          title: { display: true, text: ivPowerTitle(), color: '#ff9f43' },
-          ticks: { color: '#ff9f43', font: { size: 11 } },
+          title: { display: true, text: ivPowerTitle(), color: '#ff9f0a' },
+          ticks: { color: '#ff9f0a', font: { size: 11 } },
           grid: { drawOnChartArea: false },
           border: { color: ct('grid') },
         },
@@ -1091,6 +1472,8 @@ let currentData = null;
 fileInput.addEventListener('change', function(e) {
   const file = e.target.files[0];
   if (!file) return;
+  multiBatch = Array.from(e.target.files || []);
+  clearMultiCharts();
   fileName.textContent = file.name + ' (' + (file.size / 1024).toFixed(0) + ' KB)';
   loading.style.display = 'block';
   chartsDiv.innerHTML = '';
@@ -1102,15 +1485,39 @@ fileInput.addEventListener('change', function(e) {
   const reader = new FileReader();
   reader.onload = function(evt) { parseAndBuild(evt.target.result, file.name); };
   reader.onerror = function() { loading.style.display = 'none'; };
-  reader.readAsText(file, 'Big5');
+  // UTF-8 BOM → UTF-8；否則先試 Big5，若出現無法解碼的字元則改用 UTF-8
+  reader.readAsArrayBuffer(file);
+  reader.onload = function(evt) {
+    const buf = new Uint8Array(evt.target.result);
+    let text = null;
+    if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) {
+      text = new TextDecoder('utf-8').decode(buf);
+    } else {
+      try { text = new TextDecoder('big5').decode(buf); } catch (err) { text = null; }
+      if (text === null || text.indexOf('\uFFFD') !== -1) {
+        try { text = new TextDecoder('utf-8').decode(buf); } catch (err) { text = ''; }
+      }
+    }
+    const clean = text.replace(/^\uFEFF/, '');
+    // 單檔 → 原本流程；多檔 → 疊圖比較
+    if (multiBatch.length <= 1) {
+      parseAndBuild(clean, file.name);
+    } else {
+      loadMultiFiles(multiBatch);
+    }
+  };
 });
 
-function parseAndBuild(csvText, filename) {
+// 解析資料表 → { headers, numericCols, times, series, labels, timeCol, xIsTime }
+function analyzeTable(csvText) {
   try {
-    const lines = csvText.trim().split('\n');
+    // 先切除前導檔頭（.fcd 等），分隔符也要依「切除後」的內容判斷
+    const stripped = stripPreamble(csvText);
+    const lines = stripped.trim().split('\n');
     if (lines.length < 2) { loading.style.display = 'none'; return; }
+    const delim = detectDelim(stripped);
 
-    const rawHeaders = parseCSVLine(lines[0]);
+    const rawHeaders = parseCSVLine(lines[0], delim);
     const headers = rawHeaders.map(h => {
       let s = h.replace(/^['"]|['"]$/g, '').trim().replace(/^\uFEFF/, '');
       if (s.includes('ime (Sec)')) s = s.replace(/^.*ime/, 'Time');
@@ -1120,7 +1527,7 @@ function parseAndBuild(csvText, filename) {
 
     const rows = [];
     for (let i = 1; i < lines.length; i++) {
-      const cols = parseCSVLine(lines[i]);
+      const cols = parseCSVLine(lines[i], delim);
       if (cols.length < 2) continue;
       rows.push(cols.map(c => {
         c = c.replace(/^['"]|['"]$/g, '').trim();
@@ -1202,7 +1609,19 @@ function parseAndBuild(csvText, filename) {
 
     const labels = xIsTime ? times.map(d => fmtTimeShort(d)) : times.map(v => String(v));
     if (xCol >= 0) headers[xCol] = headers[xCol].replace(/^\uFEFF/, '').replace(/^[^\w\(]+/, '').trim() || headers[xCol].trim();
-    currentData = { times, series, labels, numericCols, headers, timeCol: xCol, xIsTime };
+    return { headers: headers, numericCols: numericCols, times: times, series: series, labels: labels, timeCol: xCol, xIsTime: xIsTime };
+  } catch (e) { return null; }
+}
+
+function parseAndBuild(csvText, filename) {
+  try {
+    const analyzed = analyzeTable(csvText);
+    if (!analyzed) { loading.style.display = "none"; return; }
+    currentData = analyzed;
+    const times = analyzed.times, series = analyzed.series, labels = analyzed.labels;
+    const numericCols = analyzed.numericCols, headers = analyzed.headers;
+
+    loading.style.display = "none";
 
     loading.style.display = 'none';
 
@@ -1210,7 +1629,7 @@ function parseAndBuild(csvText, filename) {
     columnConfigDiv.style.display = 'block';
      columnConfigDiv.innerHTML = '<h4>📊 選擇要顯示的 Y 軸資料</h4>'
       + '<div id="colCheckboxes" style="columns:180px;column-gap:24px;margin:10px 0"></div>'
-      + '<div><label style="color:#ffd93d;font-size:13px;cursor:pointer"><input type="checkbox" id="selectAllCols" checked> 全選 / 取消全選</label></div>'
+      + '<div><label style="color:var(--accent);font-size:13px;cursor:pointer"><input type="checkbox" id="selectAllCols" checked> 全選 / 取消全選</label></div>'
       + '<div style="margin-top:10px"><button id="confirmCols" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:6px 24px;border-radius:4px;cursor:pointer;font-size:13px">✓ 確認選擇</button></div>';
 
     const cbDiv = document.getElementById('colCheckboxes');
@@ -1305,7 +1724,8 @@ function calcSlope(dataArr, chart) {
 }
 
 // Simple CSV line parser (handles quoted fields)
-function parseCSVLine(line) {
+function parseCSVLine(line, delim) {
+  const d = delim || ',';
   const result = [];
   let current = '';
   let inQuote = false;
@@ -1313,7 +1733,7 @@ function parseCSVLine(line) {
     const ch = line[i];
     if (ch === '"') {
       inQuote = !inQuote;
-    } else if (ch === ',' && !inQuote) {
+    } else if (ch === d && !inQuote) {
       result.push(current);
       current = '';
     } else {
@@ -1324,12 +1744,41 @@ function parseCSVLine(line) {
   return result;
 }
 
+// 自動判斷分隔符：Tab / 逗號 / 分號 / 連續空白
+// 某些儀器檔（如 FuelCell .fcd）開頭有大量檔頭說明，
+// 真正的欄位標題列從 'Time (Sec)' 開始 → 先切除前導檔頭與 'End Comments' 標記
+function stripPreamble(text) {
+  let lines = String(text).split(/\r?\n/);
+  const start = lines.findIndex(function(l) { return /(^|[\t,;]|\s)\s*Time\s*\(Sec\)/i.test(l); });
+  if (start > 0) lines = lines.slice(start);
+  lines = lines.filter(function(l) { return !/^\s*End\s+Comments\s*$/i.test(l); });
+  return lines.join('\n');
+}
+
+function detectDelim(text) {
+  const lines = String(text).split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.trim()) continue;
+    const tabs = (l.match(/\t/g) || []).length;
+    const commas = (l.match(/,/g) || []).length;
+    const semis = (l.match(/;/g) || []).length;
+    if (tabs >= commas && tabs >= semis && tabs > 0) return '\t';
+    if (commas >= semis && commas > 0) return ',';
+    if (semis > 0) return ';';
+    // 整列以空白分隔（例如用空格對齊的儀器輸出）
+    if (/^\s*\S+(\s{2,}\S+)+\s*$/.test(l)) return /(\s{2,})/.exec(l)[1];
+    return ',';   // 單欄資料（如流水號 A 欄）
+  }
+  return ',';
+}
+
 function buildCharts(times, series, labels, numericCols, headers, timeCol) {
   const nCols = numericCols.length;
   if (nCols === 0) return;
   plotlineData = { times, series, numericCols, headers, timeCol, xIsTime: times[0] instanceof Date };
 
-  const colors = ['#00d2ff', '#ff6b6b', '#ffd93d', '#6bcb77', '#c084fc', '#f97316', '#ec4899', '#14b8a6', '#a78bfa', '#fb923c', '#4ade80', '#38bdf8'];
+  const colors = ['#0a84ff', '#ff375f', '#ff9f0a', '#30d158', '#bf5af2', '#64d2ff', '#5e5ce6', '#ff2d55', '#ffd60a', '#66d4cf', '#ff453a', '#32ade6'];
 
   // Stats
   const r2 = v => Math.round(v * 100) / 100;
@@ -1385,7 +1834,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
             const hi = ctx.chart['_thHi_' + ctx.datasetIndex];
             if (lo === undefined || hi === undefined) return dsColor;
             const y0 = ctx.p0.parsed.y, y1 = ctx.p1.parsed.y;
-            if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return '#ff4444';
+            if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return '#ff453a';
             return dsColor;
           },
           borderWidth: function(ctx) {
@@ -1429,13 +1878,13 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
               },
             },
             tooltip: {
-              backgroundColor: '#0f3460', titleColor: '#00d2ff', bodyColor: '#eee',
-              borderColor: '#00d2ff', borderWidth: 1,
+              backgroundColor: 'rgba(28,28,30,0.94)', titleColor: '#0a84ff', bodyColor: '#f5f5f7',
+              borderColor: 'rgba(255,255,255,0.14)', borderWidth: 1,
             },
             zoom: {
               zoom: {
                 wheel: { enabled: false },
-                drag: { enabled: true, backgroundColor: 'rgba(0,210,255,0.1)', borderColor: '#00d2ff', borderWidth: 1.5 },
+                drag: { enabled: true, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
                 mode: 'xy',
                 onZoomComplete: function(e) { applyZoomSync(e.chart); },
               },
@@ -1502,7 +1951,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       ySorted.forEach(function(entry) {
         const col = entry.col, i = entry.idx;
         const axisId = 'y' + i;
-        const sideColor = i % 2 === 0 ? '#ffd93d' : '#00d2ff';
+        const sideColor = i % 2 === 0 ? '#ff9f0a' : '#0a84ff';
         const row = document.createElement('div');
         row.style.cssText = 'margin:4px 0;white-space:nowrap;break-inside:avoid';
         row.innerHTML = '<input type="checkbox" id="ySyncChk_' + i + '" title="勾選後與其他已勾選的數列連動範圍" style="margin-right:6px;vertical-align:middle">'
@@ -1576,7 +2025,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       c.querySelector('.zoom-hint').appendChild(thToggle);
       c.appendChild(thDiv);
       numericCols.forEach((col, i) => {
-        const sideColor = i % 2 === 0 ? '#ffd93d' : '#00d2ff';
+        const sideColor = i % 2 === 0 ? '#ff9f0a' : '#0a84ff';
         const row = document.createElement('div');
         row.style.cssText = 'margin:4px 0';
         row.innerHTML = '<span style="color:' + sideColor + ';font-size:11px;display:inline-block;width:110px">' + headers[col] + '</span>'
@@ -1676,7 +2125,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
     containers.forEach(function(cEl, idx) {
       if (idx % perPage === 0) {
         curPage = document.createElement('div');
-        curPage.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:10px';
+        curPage.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;align-items:start';
         indWrap.appendChild(curPage);
         pages.push(curPage);
       }
@@ -1768,7 +2217,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
               const lo = ctx.chart._thLo, hi = ctx.chart._thHi;
               if (lo === undefined || hi === undefined) return color;
               const y0 = ctx.p0.parsed.y, y1 = ctx.p1.parsed.y;
-              if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return '#ff4444';
+              if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return '#ff453a';
               return color;
             },
             borderWidth: function(ctx) {
@@ -1786,13 +2235,13 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
           plugins: {
             legend: { labels: { color: ct('legend'), font: { size: 11 } } },
             tooltip: {
-              backgroundColor: '#0f3460', titleColor: '#00d2ff', bodyColor: '#eee',
-              borderColor: '#00d2ff', borderWidth: 1,
+              backgroundColor: 'rgba(28,28,30,0.94)', titleColor: '#0a84ff', bodyColor: '#f5f5f7',
+              borderColor: 'rgba(255,255,255,0.14)', borderWidth: 1,
             },
             zoom: {
               zoom: {
                 wheel: { enabled: false },
-                drag: { enabled: true, backgroundColor: 'rgba(0,210,255,0.1)', borderColor: '#00d2ff', borderWidth: 1.5 },
+                drag: { enabled: true, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
                 mode: 'xy',
                 onZoomComplete: function(e) { applyZoomSync(e.chart); },
               },
@@ -1867,7 +2316,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
   chartsDiv.appendChild(indWrap);
   const indGrid = document.createElement('div');
   indGrid.id = 'indGrid';
-  indGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:10px';
+  indGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;align-items:start';
   indWrap.appendChild(indGrid);
   const perPage = 9999;
   const pages = [indGrid];
