@@ -2,15 +2,15 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>CSV 折線圖產生器</title>
+<title>測試數據作圖產生器</title>
 <meta name="author" content="Daniel">
 <meta name="copyright" content="Copyright © 2026 Daniel. All rights reserved.">
-<meta name="description" content="CSV 折線圖產生器 — by Daniel">
+<meta name="description" content="測試數據作圖產生器 — by Daniel">
 <!--
   ============================================================
   CSV 折線圖產生器 (CSV Line Chart Generator)
   作者 Author : 江國成 / Daniel
-  版本 Version: 2.5
+  版本 Version: 2.6
   說明        : 純前端單檔 HTML，離線可用（Chart.js 走 CDN）
   授權 License: © 2026 江國成 (Daniel). All rights reserved.
 
@@ -74,7 +74,7 @@ body {
   max-width:1440px; margin-left:auto; margin-right:auto;
 }
 
-h1 { text-align:center; margin-bottom:6px; color:var(--text); font-size:34px; font-weight:700; letter-spacing:-0.025em; }
+h1 { text-align:center; margin-bottom:28px; color:var(--text); font-size:34px; font-weight:700; letter-spacing:-0.025em; }
 .subtitle { text-align:center; color:var(--muted); font-size:14px; font-weight:400; margin-bottom:28px; letter-spacing:0; }
 
 /* 藥丸按鈕 + focus ring */
@@ -141,11 +141,24 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 .plotline-out {
   margin-top:10px; padding:10px 12px; background:var(--out-bg);
   border:1px solid var(--hairline); border-radius:12px; display:none;
+  max-height:260px; overflow:auto;
 }
-.plotline-out .pl-line {
-  font-family:"SF Mono", ui-monospace, Menlo, Consolas, monospace;
-  font-size:12px; color:var(--result-fg); margin:2px 0; font-variant-numeric:tabular-nums;
+.pl-table { border-collapse:collapse; width:100%; font-size:12px; font-variant-numeric:tabular-nums; }
+.pl-table th, .pl-table td {
+  padding:5px 10px; text-align:right; white-space:nowrap;
+  border-bottom:1px solid var(--hairline);
 }
+.pl-table thead th {
+  color:var(--accent); font-weight:600; text-align:right;
+  font-size:11px; letter-spacing:0.01em;
+  border-bottom:1px solid var(--accent);
+}
+.pl-table thead th:first-child, .pl-table tbody td:first-child {
+  text-align:center; color:var(--accent); font-weight:600;
+}
+.pl-table tbody td { color:var(--tick); }
+.pl-table tbody tr:hover td { background:rgba(128,128,128,0.1); }
+.pl-table tbody tr:last-child td { border-bottom:none; }
 
 /* 圖表選單（popover） */
 .chart-menu-btn {
@@ -187,13 +200,12 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 </style>
 </head>
 <body>
-<h1>📈 CSV 折線圖產生器</h1>
-<p class="subtitle">自動偵測時間欄位 + 數字欄位，拖曳/點擊縮放</p>
+<h1>📈 測試數據作圖產生器</h1>
 <div class="controls">
   <label for="fileInput" title="可一次選多個檔案，最多 6 個疊圖比較">📂 選擇CSV／TXT／FCD檔案(可多選)</label>
   <input type="file" id="fileInput" accept=".csv,.txt,.tsv,.dat,.fcd,*" multiple>>
   <span id="fileName">未選擇檔案</span>
-  <label for="ivFileInput" style="margin-left:18px" title="可一次選多個檔案，最多 6 個疊圖比較">⚡ 選擇IV曲線的CSV／FCD檔案（可多選）</label>
+  <label for="ivFileInput" style="margin-left:18px" title="可一次選多個檔案，最多 6 個疊圖比較">⚡ 選擇IV曲線的CSV／TXT／FCD檔案（可多選）</label>
   <input type="file" id="ivFileInput" accept=".csv,.txt,.fcd,*" multiple>
   <span id="ivFileName">未選擇檔案</span>
 </div>
@@ -207,7 +219,7 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 <button id="themeToggle" title="切換深色／淺色版面">☀️ 淺色版面</button>
 </div>
 <footer class="app-footer">
-  <span class="author">CSV 折線圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v2.5</span>
+  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v2.6</span>
 </footer>
 
 <script>
@@ -221,6 +233,11 @@ let syncSuppress = false;
 let plotlineEnabled = false;
 let plotlineCount = 0;
 let plotlineData = null; // { times, series, numericCols, headers, timeCol }
+// IV 曲線專屬的 Plotline 狀態（與一般折線圖各自獨立計次與顯示）
+let ivPlotlineCount = 0;
+let ivCrosshairX = null;   // 游標所在處的 X 值（電流）
+let ivPlotlineMarks = [];  // [{ x, n }]
+let ivPlotlineRecords = [];// [{ n, sortKey, cells: [{ label, text }] }]
 
 function applyZoomSync(srcChart) {
   if (syncSuppress) return;
@@ -248,8 +265,24 @@ function applyZoomSync(srcChart) {
 // Crosshair sync state — mouse X position shared across all charts
 const crosshairState = { x: -1 };
 
+// 重繪請求合併到同一個 animation frame，避免連續點擊／滑動時重複觸發繪製
+let redrawPending = false;
 function redrawAllCharts() {
-  allCharts.forEach(ch => { try { ch.draw(); } catch(e) {} });
+  if (redrawPending) return;
+  redrawPending = true;
+  const run = function() {
+    redrawPending = false;
+    // 用公開的 render() 重繪；不可用 draw()（Chart.js 內部 API，會讓渲染狀態不同步）。
+    // 同時略過目前不可見的圖表，避免對 0 尺寸的畫布繪製。
+    allCharts.forEach(function(ch) {
+      try {
+        if (!ch.canvas || !ch.canvas.offsetParent) return;
+        ch.render();
+      } catch(e) {}
+    });
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 16);
 }
 
 Chart.register({
@@ -307,6 +340,140 @@ Chart.register({
   },
 });
 
+// IV 曲線專屬的 Plotline 繪圖（垂直線 + 編號 + 游標）
+Chart.register({
+  id: 'ivCrosshairSync',
+  afterDraw(chart) {
+    if (!chart.$isIV) return;
+    if (!plotlineEnabled) return;
+    const ctx = chart.ctx;
+    const xs = chart.scales.x;
+    const ca = chart.chartArea;
+    if (!xs || !ca) return;
+
+    // 已固定的讀值線
+    if (ivPlotlineMarks.length) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(10,132,255,0.75)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      const drawn = [];
+      ivPlotlineMarks.forEach(function(mk) {
+        const px = xs.getPixelForValue(mk.x);
+        if (px < ca.left || px > ca.right) return;
+        ctx.moveTo(px, ca.top);
+        ctx.lineTo(px, ca.bottom);
+        drawn.push({ px: px, n: mk.n });
+      });
+      ctx.stroke();
+      ctx.font = 'bold 10px "SF Mono", ui-monospace, Menlo, monospace';
+      ctx.textAlign = 'left';
+      drawn.forEach(function(d) {
+        const label = String(d.n).padStart(2, '0');
+        const tx = d.px + 2, ty = ca.top + 10;
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(tx - 1, ty - 8, tw + 2, 11);
+        ctx.fillStyle = '#0a84ff';
+        ctx.fillText(label, tx, ty);
+      });
+      ctx.restore();
+    }
+
+    // 游標虛線
+    if (ivCrosshairX === null) return;
+    const px = xs.getPixelForValue(ivCrosshairX);
+    if (px < ca.left || px > ca.right) return;
+    ctx.save();
+    ctx.strokeStyle = isLightTheme() ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(px, ca.top);
+    ctx.lineTo(px, ca.bottom);
+    ctx.stroke();
+    ctx.restore();
+  },
+});
+
+// IV 曲線的 Plotline：獨立讀值框、獨立編號（ivPlotline01…）
+function setupIVPlotline(chart, canvas) {
+  const container = canvas.closest('.chart-container');
+  if (!container) return;
+  const outDiv = document.createElement('div');
+  outDiv.className = 'plotline-out';
+  outDiv.id = 'ivPlotlineOut';
+  container.appendChild(outDiv);
+
+  let dragX = null, dragY = null;
+  canvas.addEventListener('mousedown', function(e) {
+    dragX = e.clientX; dragY = e.clientY;
+  });
+  canvas.addEventListener('mousemove', function(e) {
+    if (!plotlineEnabled) return;
+    if (e.buttons & 1) return;
+    const ca = chart.chartArea;
+    if (!ca) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    if (mx < ca.left || mx > ca.right || my < ca.top || my > ca.bottom) {
+      if (ivCrosshairX !== null) { ivCrosshairX = null; try { chart.render(); } catch (err) {} }
+      return;
+    }
+    const xs = chart.scales && chart.scales.x;
+    if (!xs) return;
+    const v = xs.getValueForPixel(mx);
+    if (isNaN(v)) return;
+    if (ivCrosshairX !== v) { ivCrosshairX = v; try { chart.render(); } catch (err) {} }
+  });
+  canvas.addEventListener('mouseleave', function() {
+    if (ivCrosshairX !== null) { ivCrosshairX = null; try { chart.render(); } catch (err) {} }
+  });
+  canvas.addEventListener('click', function(e) {
+    if (!plotlineEnabled) return;
+    if (dragX !== null &&
+        (Math.abs(e.clientX - dragX) > 4 || Math.abs(e.clientY - dragY) > 4)) return;
+    const ca = chart.chartArea;
+    if (!ca) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    if (mx < ca.left || mx > ca.right || my < ca.top || my > ca.bottom) return;
+    const xs = chart.scales && chart.scales.x;
+    if (!xs) return;
+    const xVal = xs.getValueForPixel(mx);
+    if (isNaN(xVal)) return;
+
+    const xName = (ivSel.xi >= 0 && ivRefSeries().headers[ivSel.xi]) || 'X';
+
+    // 每條曲線取 X 最接近的點
+    const cells = [{ label: xName, text: xVal.toFixed(4) }];
+    let nearestY = NaN;
+    (chart.data.datasets || []).forEach(function(ds) {
+      if (ds.hidden) return;
+      if (ds.yAxisID === 'yPow') return;          // 功率曲線另外用 I×V 表示
+      const pts = ds.data || [];
+      if (!pts.length) return;
+      let best = null, bestD = Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const d = Math.abs(pts[i].x - xVal);
+        if (d < bestD) { bestD = d; best = pts[i]; }
+      }
+      if (best) {
+        cells.push({ label: ds.label.replace(/ \(V\)$/, ''), text: (+best.y).toFixed(4) });
+        if (isNaN(nearestY)) nearestY = best.y;
+      }
+    });
+    if (!isNaN(nearestY)) cells.push({ label: 'P (W)', text: (xVal * nearestY).toFixed(3) });
+
+    ivPlotlineCount++;
+    ivPlotlineRecords.push({ n: ivPlotlineCount, sortKey: xVal, cells: cells });
+    renderPlotlineTable(outDiv, ivPlotlineRecords);
+    ivPlotlineMarks.push({ x: xVal, n: ivPlotlineCount });
+    try { chart.render(); } catch (err) {}
+  });
+}
+
 function setupCrosshair(chart, canvas, labels) {
   canvas.addEventListener('mousemove', function(e) {
     if (e.buttons & 1) return;
@@ -344,14 +511,37 @@ const fileName = document.getElementById('fileName');
 const columnConfigDiv = document.getElementById('columnConfig');
 const plotlineToggle = document.getElementById('plotlineToggle');
 
+// Plotline 開啟時停用拖曳縮放／平移：讀值模式下點擊的同時若滑鼠有微小位移，
+// 會被 zoom 外掛當成框選縮放，畫面被放大到只剩一小段，看起來像資料線消失。
+function syncZoomEnabledByPlotline() {
+  const list = allCharts.slice();
+  if (ivChart) list.push(ivChart);          // IV 圖表不在 allCharts 內，需另外帶入
+  list.forEach(function(ch) {
+    try {
+      const z = ch.options && ch.options.plugins && ch.options.plugins.zoom;
+      if (!z) return;
+      if (z.zoom && z.zoom.drag) z.zoom.drag.enabled = !plotlineEnabled;
+      if (z.pan) z.pan.enabled = !plotlineEnabled;
+      ch.render();
+    } catch(e) {}
+  });
+}
+
 plotlineToggle.addEventListener('click', function() {
   plotlineEnabled = !plotlineEnabled;
   this.classList.toggle('on', plotlineEnabled);
   if (plotlineEnabled) {
     plotlineCount = 0;
     allCharts.forEach(function(ch) { if (ch._plotlineMarks) ch._plotlineMarks = []; });
-    document.querySelectorAll('.plotline-out').forEach(function(el) { el.innerHTML = ''; });
+    document.querySelectorAll('.plotline-out').forEach(function(el) { el.innerHTML = ''; el._plHtml = ''; });
+    // IV 曲線的讀值狀態一併重置（獨立計次）
+    ivPlotlineCount = 0;
+    ivPlotlineMarks = [];
+    ivPlotlineRecords = [];
+    ivCrosshairX = null;
+    allCharts.forEach(function(ch) { if (ch._plotlineRecords) ch._plotlineRecords = []; });
   }
+  syncZoomEnabledByPlotline();
 });
 
 // Theme toggle (dark / light)
@@ -428,6 +618,37 @@ if (c.label === '#ffffff') return { stroke: 'rgba(40,40,40,0.65)', label: '#3333
     return c;
   });
 }
+// Plotline 讀值表格：第一欄＝序號、第一列＝各欄標籤
+// records: [{ n, sortKey, cells: [{ label, text }] }]
+function renderPlotlineTable(outDiv, records) {
+  if (!outDiv) return;
+  const list = records.slice().sort(function(a, b) { return b.sortKey - a.sortKey; });
+  if (!list.length) { outDiv.innerHTML = ''; outDiv.style.display = 'none'; return; }
+  const labels = [];
+  list.forEach(function(r) {
+    r.cells.forEach(function(c) { if (labels.indexOf(c.label) < 0) labels.push(c.label); });
+  });
+  let html = '<table class="pl-table"><thead><tr><th>序號</th>';
+  labels.forEach(function(l) { html += '<th>' + escHtml(l) + '</th>'; });
+  html += '</tr></thead><tbody>';
+  list.forEach(function(r) {
+    html += '<tr><td>' + String(r.n).padStart(2, '0') + '</td>';
+    labels.forEach(function(l) {
+      let cell = null;
+      for (let i = 0; i < r.cells.length; i++) if (r.cells[i].label === l) { cell = r.cells[i]; break; }
+      html += '<td>' + (cell ? escHtml(cell.text) : '') + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  // 內容沒變就不碰 DOM，避免連續點擊時反覆重建造成畫布重繪異常
+  if (outDiv._plHtml !== html) {
+    outDiv._plHtml = html;
+    outDiv.innerHTML = html;
+  }
+  outDiv.style.display = 'block';
+}
+
 function setupPlotline(chart, canvas, labels, cols) {
   const container = canvas.closest('.chart-container');
   if (!container) return;
@@ -435,6 +656,7 @@ function setupPlotline(chart, canvas, labels, cols) {
   outDiv.className = 'plotline-out';
   container.appendChild(outDiv);
   chart._plotlineMarks = [];
+  chart._plotlineRecords = [];
   const lineColors = (chart.data.datasets || []).map(ds => parseColor(ds.borderColor)).filter(Boolean);
   const CANDS = plotlineCandidates();
   let picked = CANDS[0];
@@ -470,24 +692,15 @@ function setupPlotline(chart, canvas, labels, cols) {
     if (xIdx < 0 || xIdx >= labels.length) return;
     plotlineCount++;
     const d = plotlineData;
-    const timeStr = d.xIsTime ? fmtTimeShort(d.times[xIdx]) : String(d.times[xIdx]);
-    const parts = cols.map(ci => {
+    const xHeader = d.timeCol >= 0 ? (d.headers[d.timeCol] || 'X') : '索引';
+    const xVal = d.xIsTime ? fmtTimeShort(d.times[xIdx]) : String(d.times[xIdx]);
+    const cells = [{ label: xHeader, text: xVal }];
+    cols.forEach(function(ci) {
       const col = d.numericCols[ci];
-      return d.headers[col] + ': ' + d.series[col][xIdx];
+      cells.push({ label: d.headers[col] || ('欄' + (col + 1)), text: String(d.series[col][xIdx]) });
     });
-    const line = document.createElement('div');
-    line.className = 'pl-line';
-    line.dataset.x = xIdx;
-    line.style.color = picked.label;
-    line.textContent = 'plotline' + String(plotlineCount).padStart(2, '0') + ': [' + timeStr + ']  ' + parts.join('  |  ');
-    const existing = outDiv.querySelectorAll('.pl-line');
-    let insertAfter = null;
-    existing.forEach(function(el) {
-      if (parseInt(el.dataset.x, 10) <= xIdx) insertAfter = el;
-    });
-    if (insertAfter) insertAfter.insertAdjacentElement('afterend', line);
-    else outDiv.insertBefore(line, outDiv.firstChild);
-    outDiv.style.display = 'block';
+    chart._plotlineRecords.push({ n: plotlineCount, sortKey: xIdx, cells: cells });
+    renderPlotlineTable(outDiv, chart._plotlineRecords);
     chart._plotlineMarks.push({ x: xIdx, n: plotlineCount });
     redrawAllCharts();
   });
@@ -854,7 +1067,7 @@ function buildMultiChart(selectedCols) {
   wrap.className = 'chart-container';
   wrap.innerHTML = '<h3>📈 多檔疊圖比較（' + multiFiles.length + ' 個檔案 / ' + selectedCols.length + ' 個欄位）</h3>'
     + '<div class="chart-wrap" style="height:62vh;min-height:380px"><canvas id="multiCanvas"></canvas></div>'
-    + '<div class="zoom-hint">🖱️ 拖曳縮放(框選XY) · Shift+拖曳平移'
+    + '<div class="zoom-hint">🖱️ 拖曳框選縮放 XY（需拖>10px） · Shift+拖曳平移'
     + '<button id="multiReset">↺ 重設</button>'
     + '<button id="multiClear2">🗑️ 清除全部曲線</button></div>';
   host.appendChild(wrap);
@@ -906,7 +1119,7 @@ function buildMultiChart(selectedCols) {
         zoom: {
           zoom: {
             wheel: { enabled: false },
-            drag: { enabled: true, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
+            drag: { enabled: true, threshold: 10, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
             mode: 'xy',
             onZoomComplete: function (e) { applyZoomSync(e.chart); },
           },
@@ -1270,9 +1483,13 @@ function ivBuildDatasets() {
 }
 
 function renderIVChart() {
-  if (ivChart) { try { ivChart.destroy(); } catch(e) {} ivChart = null; }
-  ivChartsDiv.innerHTML = '';
-  if (!ivSeries.length) return;
+if (ivChart) { try { ivChart.destroy(); } catch(e) {} ivChart = null; }
+ivChartsDiv.innerHTML = '';
+// 圖表重建 → 先前的讀值列已無效
+ivPlotlineRecords = [];
+ivPlotlineMarks = [];
+ivCrosshairX = null;
+if (!ivSeries.length) return;
   const ref = ivRefSeries();
 
   const wrap = document.createElement('div');
@@ -1281,7 +1498,7 @@ function renderIVChart() {
     + '<div id="ivSelRow" style="margin-bottom:6px;font-size:12px;color:var(--stat)"></div>'
     + '<div id="ivOptRow" style="margin-bottom:10px;font-size:12px;color:var(--stat);display:flex;align-items:center;gap:14px;flex-wrap:wrap"></div>'
     + '<div class="chart-wrap" style="height:64vh;min-height:380px"><canvas id="ivCanvas"></canvas></div>'
-    + '<div class="zoom-hint">🖱️ 拖曳框選縮放 · 滾輪縮放 · Shift+拖曳平移'
+    + '<div class="zoom-hint">🖱️ 拖曳框選縮放 XY（需拖>10px） · Shift+拖曳平移'
     + '<button type="button" id="ivReset">↺ 重設</button>'
     + '<button type="button" id="ivClear">🗑️ 清除全部曲線</button></div>';
   ivChartsDiv.appendChild(wrap);
@@ -1353,7 +1570,7 @@ function renderIVChart() {
         zoom: {
           zoom: {
             wheel: { enabled: false },   // 與折線圖一致：不用滾輪縮放，改用拖曳框選
-            drag: { enabled: true, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
+            drag: { enabled: true, threshold: 10, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
             mode: 'xy',
           },
           pan: { enabled: true, mode: 'xy', modifierKey: 'shift' },
@@ -1388,6 +1605,9 @@ function renderIVChart() {
   });
   ivChart.$isIV = true;
   setupIVAxisEdit(ivChart, canvas);
+  setupIVPlotline(ivChart, canvas);
+  // 若 Plotline 已開啟，新建立的圖表也要停用拖曳縮放
+  syncZoomEnabledByPlotline();
 
   const refreshPoints = function() {
     const fresh = ivBuildDatasets();
@@ -1791,7 +2011,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
   (function() {
     const c = document.createElement('div');
     c.className = 'chart-container';
-    c.innerHTML = '<h3>📍 疊圖 — 全部欄位合一</h3><div class="chart-wrap"><canvas id="chAll"></canvas></div><div class="zoom-hint">🖱️ 拖曳縮放(框選XY) · Shift+拖曳平移<button onclick="resetChart(\'chAll\')">↺ 重設</button></div>';
+    c.innerHTML = '<h3>📍 疊圖 — 全部欄位合一</h3><div class="chart-wrap"><canvas id="chAll"></canvas></div><div class="zoom-hint">🖱️ 拖曳框選縮放 XY（需拖>10px） · Shift+拖曳平移<button onclick="resetChart(\'chAll\')">↺ 重設</button></div>';
     chartsDiv.appendChild(c);
     const canvas = document.getElementById('chAll');
 
@@ -1884,7 +2104,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
             zoom: {
               zoom: {
                 wheel: { enabled: false },
-                drag: { enabled: true, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
+                drag: { enabled: true, threshold: 10, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
                 mode: 'xy',
                 onZoomComplete: function(e) { applyZoomSync(e.chart); },
               },
@@ -1898,6 +2118,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       setupPlotline(chart, canvas, labels, numericCols.map((_, i) => i));
       setupAxisEdit(chart, canvas, labels, times, timeCol);
       allCharts.push(chart);
+      if (plotlineEnabled) syncZoomEnabledByPlotline();
 
       // Slope button
       const allHintDiv = c.querySelector('.zoom-hint');
@@ -2171,7 +2392,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
   function makeChart(id, title, dataArr, unit, color, parent, colIdx) {
     const c = document.createElement('div');
     c.className = 'chart-container';
-    c.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px"><span class="drag-handle" title="拖曳排序">⠿</span><h3 style="margin-bottom:0">' + title + '</h3></div><div class="chart-menu-wrap" style="position:relative"><button class="chart-menu-btn" title="更多選項">⋯</button><div class="chart-menu"><div class="chart-menu-item danger" data-action="delete">🗑️ 刪除</div></div></div></div><div class="chart-wrap" style="height:34vh;min-height:180px"><canvas id="' + id + '"></canvas></div><div class="zoom-hint">🖱️ 拖曳縮放(框選XY) · Shift+拖曳平移<button onclick="resetChart(\'' + id + '\')">↺ 重設</button></div>';
+    c.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="display:flex;align-items:center;gap:6px"><span class="drag-handle" title="拖曳排序">⠿</span><h3 style="margin-bottom:0">' + title + '</h3></div><div class="chart-menu-wrap" style="position:relative"><button class="chart-menu-btn" title="更多選項">⋯</button><div class="chart-menu"><div class="chart-menu-item danger" data-action="delete">🗑️ 刪除</div></div></div></div><div class="chart-wrap" style="height:34vh;min-height:180px"><canvas id="' + id + '"></canvas></div><div class="zoom-hint">🖱️ 拖曳框選縮放 XY（需拖>10px） · Shift+拖曳平移<button onclick="resetChart(\'' + id + '\')">↺ 重設</button></div>';
     // Threshold inputs below chart
     c.innerHTML += '<div class="thresh-row" style="text-align:center;margin-top:6px;font-size:12px;color:var(--stat)">'
       + '下限: <input type="number" step="any" id="thLo_' + id + '" placeholder="無" style="width:80px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:2px 6px;font-size:11px;margin-right:12px">'
@@ -2241,7 +2462,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
             zoom: {
               zoom: {
                 wheel: { enabled: false },
-                drag: { enabled: true, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
+                drag: { enabled: true, threshold: 10, backgroundColor: 'rgba(10,132,255,0.12)', borderColor: '#0a84ff', borderWidth: 1.5 },
                 mode: 'xy',
                 onZoomComplete: function(e) { applyZoomSync(e.chart); },
               },
@@ -2267,6 +2488,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       setupPlotline(chart, canvas, labels, [colIdx]);
       setupAxisEdit(chart, canvas, labels, times, timeCol);
       allCharts.push(chart);
+      if (plotlineEnabled) syncZoomEnabledByPlotline();
 
       const hintDiv = c.querySelector('.zoom-hint');
       const slopeBtn = document.createElement('button');
