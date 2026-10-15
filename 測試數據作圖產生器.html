@@ -405,6 +405,7 @@ function setupIVPlotline(chart, canvas) {
   outDiv.className = 'plotline-out';
   outDiv.id = 'ivPlotlineOut';
   container.appendChild(outDiv);
+  chart._plotlineOut = outDiv;
 
   let dragX = null, dragY = null;
   canvas.addEventListener('mousedown', function(e) {
@@ -446,10 +447,11 @@ function setupIVPlotline(chart, canvas) {
 
     const xName = (ivSel.xi >= 0 && ivRefSeries().headers[ivSel.xi]) || 'X';
 
-    // 每條曲線取 X 最接近的點
+    // 每條曲線取 X 最接近的點（記錄所屬 dataset 索引，隱藏時可同步從表格移除）
     const cells = [{ label: xName, text: xVal.toFixed(4) }];
-    let nearestY = NaN;
-    (chart.data.datasets || []).forEach(function(ds) {
+    const vis = [];              // 依序記錄可見曲線，用於計算前-後性能差異
+    let nearestY = NaN, nearestDs = -1;
+    (chart.data.datasets || []).forEach(function(ds, dsIdx) {
       if (ds.hidden) return;
       if (ds.yAxisID === 'yPow') return;          // 功率曲線另外用 I×V 表示
       const pts = ds.data || [];
@@ -460,18 +462,126 @@ function setupIVPlotline(chart, canvas) {
         if (d < bestD) { bestD = d; best = pts[i]; }
       }
       if (best) {
-        cells.push({ label: ds.label.replace(/ \(V\)$/, ''), text: (+best.y).toFixed(4) });
-        if (isNaN(nearestY)) nearestY = best.y;
+        cells.push({
+          label: ds.label.replace(/ \(V\)$/, ''),
+          text: (+best.y).toFixed(4),
+          ds: dsIdx
+        });
+        vis.push({ ds: dsIdx, v: +best.y });
+        if (isNaN(nearestY)) { nearestY = best.y; nearestDs = dsIdx; }
       }
     });
+
+    // 性能差異：第一條可見曲線 − 第二條可見曲線，置於 P (W) 之前
+    let diff = null;
+    if (vis.length >= 2) {
+      const dV = vis[0].v - vis[1].v;
+      diff = { ds: [vis[0].ds, vis[1].ds], v0: vis[0].v, v1: vis[1].v };
+      cells.push({ label: '前-後(V)', text: dV.toFixed(3), isDiff: true });
+      cells.push({ label: '前-後(mV)', text: (dV * 1000).toFixed(0), isDiff: true });
+    }
+
     if (!isNaN(nearestY)) cells.push({ label: 'P (W)', text: (xVal * nearestY).toFixed(3) });
 
     ivPlotlineCount++;
-    ivPlotlineRecords.push({ n: ivPlotlineCount, sortKey: xVal, cells: cells });
-    renderPlotlineTable(outDiv, ivPlotlineRecords);
+    ivPlotlineRecords.push({
+      n: ivPlotlineCount, sortKey: xVal, cells: cells,
+      pDs: nearestDs, pY: nearestY, xVal: xVal, diff: diff
+    });
+    renderPlotlineTable(outDiv, ivPlotlineRecords, true, ivDatasetColors());   // IV：以電流由小到大
     ivPlotlineMarks.push({ x: xVal, n: ivPlotlineCount });
     try { chart.render(); } catch (err) {}
   });
+}
+
+// 資料集是否可見：一般圖用 meta.hidden，IV 圖用 dataset.hidden，兩者都要檢查
+function isDatasetVisible(ch, idx) {
+  const ds = ch && ch.data && ch.data.datasets && ch.data.datasets[idx];
+  if (!ds) return false;
+  if (ds.hidden) return false;
+  try {
+    const meta = ch.getDatasetMeta(idx);
+    if (meta && meta.hidden === true) return false;
+  } catch (e) {}
+  return true;
+}
+
+// 清空指定折線圖的 Plotline 讀值：圖上的垂直標記＋底下表格
+function clearChartPlotline(ch) {
+  if (!ch) return;
+  ch._plotlineMarks = [];
+  ch._plotlineRecords = [];
+  const el = ch._plotlineOut;
+  if (el) { el.innerHTML = ''; el._plHtml = ''; el.style.display = 'none'; }
+  try { ch.render(); } catch (e) {}
+  // 序號由所有折線圖共用：仍有其他圖保留讀值時不歸零，避免序號重複
+  const rest = (allCharts || []).some(function(c) {
+    return c !== ch && c._plotlineRecords && c._plotlineRecords.length;
+  });
+  if (!rest) plotlineCount = 0;
+}
+
+// 清空 IV 讀值狀態：圖上的垂直標記＋底下表格，序號重新從 01 開始
+function clearIVPlotline() {
+  ivPlotlineCount = 0;
+  ivPlotlineMarks = [];
+  ivPlotlineRecords = [];
+  ivCrosshairX = null;
+  const el = document.getElementById('ivPlotlineOut');
+  if (el) { el.innerHTML = ''; el._plHtml = ''; el.style.display = 'none'; }
+  if (ivChart) { try { ivChart.render(); } catch (e) {} }
+}
+
+// IV 各資料集的線色（依資料集索引排列），供表格標題對應著色
+function ivDatasetColors() {
+  const arr = [];
+  const list = (ivChart && ivChart.data && ivChart.data.datasets) || [];
+  list.forEach(function(ds) {
+    arr.push(typeof ds.borderColor === 'string' ? ds.borderColor : '');
+  });
+  return arr;
+}
+
+// 圖例切換顯示／隱藏後，依目前的可見狀態重建 Plotline 表格欄位
+function refreshIVPlotlineTable() {
+  const outDiv = document.getElementById('ivPlotlineOut');
+  if (!outDiv || !ivPlotlineRecords.length) return;
+  const filtered = ivPlotlineRecords.map(function(r) {
+    const cells = r.cells.filter(function(c) {
+      return c.ds === undefined || isDatasetVisible(ivChart, c.ds);
+    });
+    // P (W) 依據「點擊當下最前面那條可見曲線」計算，
+    // 若該曲線已被隱藏，P 也一併移除，避免顯示看不見的來源
+    if (r.pDs >= 0 && !isDatasetVisible(ivChart, r.pDs)) {
+      for (let i = cells.length - 1; i >= 0; i--) {
+        if (cells[i].label === 'P (W)') cells.splice(i, 1);
+      }
+    }
+    // 前-後 差異值來自前兩條可見曲線，任一被隱藏即無法計算 → 一併移除
+    if (r.diff && (!isDatasetVisible(ivChart, r.diff.ds[0]) ||
+                   !isDatasetVisible(ivChart, r.diff.ds[1]))) {
+      for (let i = cells.length - 1; i >= 0; i--) {
+        if (cells[i].isDiff) cells.splice(i, 1);
+      }
+    }
+    return { n: r.n, sortKey: r.sortKey, cells: cells };
+  });
+  renderPlotlineTable(outDiv, filtered, true, ivDatasetColors());   // IV：以電流由小到大
+}
+
+function refreshLinePlotlineTable(chart) {
+  if (!chart || !chart._plotlineRecords || !chart._plotlineRecords.length) return;
+  const outDiv = chart._plotlineOut;
+  if (!outDiv) return;
+  const filtered = chart._plotlineRecords.map(function(r) {
+    return {
+      n: r.n, sortKey: r.sortKey,
+      cells: r.cells.filter(function(c) {
+        return c.ds === undefined || isDatasetVisible(chart, c.ds);
+      })
+    };
+  });
+  renderPlotlineTable(outDiv, filtered);
 }
 
 function setupCrosshair(chart, canvas, labels) {
@@ -535,10 +645,7 @@ plotlineToggle.addEventListener('click', function() {
     allCharts.forEach(function(ch) { if (ch._plotlineMarks) ch._plotlineMarks = []; });
     document.querySelectorAll('.plotline-out').forEach(function(el) { el.innerHTML = ''; el._plHtml = ''; });
     // IV 曲線的讀值狀態一併重置（獨立計次）
-    ivPlotlineCount = 0;
-    ivPlotlineMarks = [];
-    ivPlotlineRecords = [];
-    ivCrosshairX = null;
+    clearIVPlotline();
     allCharts.forEach(function(ch) { if (ch._plotlineRecords) ch._plotlineRecords = []; });
   }
   syncZoomEnabledByPlotline();
@@ -620,16 +727,29 @@ if (c.label === '#ffffff') return { stroke: 'rgba(40,40,40,0.65)', label: '#3333
 }
 // Plotline 讀值表格：第一欄＝序號、第一列＝各欄標籤
 // records: [{ n, sortKey, cells: [{ label, text }] }]
-function renderPlotlineTable(outDiv, records) {
+function renderPlotlineTable(outDiv, records, asc, dsColors) {
   if (!outDiv) return;
-  const list = records.slice().sort(function(a, b) { return b.sortKey - a.sortKey; });
+  // asc 為 true 時由小到大排序（IV 曲線以電流排序）；未指定則由大到小
+  // dsColors：依資料集索引排列的線色陣列，讓標題依對應曲線著色
+  const list = records.slice().sort(function(a, b) {
+    return asc ? (a.sortKey - b.sortKey) : (b.sortKey - a.sortKey);
+  });
   if (!list.length) { outDiv.innerHTML = ''; outDiv.style.display = 'none'; return; }
-  const labels = [];
+  const labels = [], labelDs = {};
   list.forEach(function(r) {
-    r.cells.forEach(function(c) { if (labels.indexOf(c.label) < 0) labels.push(c.label); });
+    r.cells.forEach(function(c) {
+      if (labels.indexOf(c.label) < 0) {
+        labels.push(c.label);
+        if (c.ds !== undefined) labelDs[c.label] = c.ds;
+      }
+    });
   });
   let html = '<table class="pl-table"><thead><tr><th>序號</th>';
-  labels.forEach(function(l) { html += '<th>' + escHtml(l) + '</th>'; });
+  labels.forEach(function(l) {
+    const dsi = labelDs[l];
+    const col = (dsi !== undefined && dsColors) ? dsColors[dsi] : '';
+    html += '<th' + (col ? ' style="color:' + escHtml(col) + '"' : '') + '>' + escHtml(l) + '</th>';
+  });
   html += '</tr></thead><tbody>';
   list.forEach(function(r) {
     html += '<tr><td>' + String(r.n).padStart(2, '0') + '</td>';
@@ -655,6 +775,7 @@ function setupPlotline(chart, canvas, labels, cols) {
   const outDiv = document.createElement('div');
   outDiv.className = 'plotline-out';
   container.appendChild(outDiv);
+  chart._plotlineOut = outDiv;
   chart._plotlineMarks = [];
   chart._plotlineRecords = [];
   const lineColors = (chart.data.datasets || []).map(ds => parseColor(ds.borderColor)).filter(Boolean);
@@ -695,9 +816,15 @@ function setupPlotline(chart, canvas, labels, cols) {
     const xHeader = d.timeCol >= 0 ? (d.headers[d.timeCol] || 'X') : '索引';
     const xVal = d.xIsTime ? fmtTimeShort(d.times[xIdx]) : String(d.times[xIdx]);
     const cells = [{ label: xHeader, text: xVal }];
-    cols.forEach(function(ci) {
+    cols.forEach(function(ci, i) {
       const col = d.numericCols[ci];
-      cells.push({ label: d.headers[col] || ('欄' + (col + 1)), text: String(d.series[col][xIdx]) });
+      // ds：對應的 dataset 索引（dataset 與 cols 同序建立），
+      // 供圖例切換顯示時同步從表格移除該欄
+      cells.push({
+        label: d.headers[col] || ('欄' + (col + 1)),
+        text: String(d.series[col][xIdx]),
+        ds: i
+      });
     });
     chart._plotlineRecords.push({ n: plotlineCount, sortKey: xIdx, cells: cells });
     renderPlotlineTable(outDiv, chart._plotlineRecords);
@@ -1147,7 +1274,17 @@ function buildMultiChart(selectedCols) {
   allCharts.push(multiChart);
 
   wrap.querySelector('#multiReset').addEventListener('click', function () {
-    if (multiChart) { try { multiChart.resetZoom(); } catch (e) {} }
+    if (!multiChart) return;
+    try { multiChart.resetZoom(); } catch (e) {}
+    // 清除雙擊軸範圍設定的手動 min/max 與刻度間隔
+    Object.keys(multiChart.options.scales || {}).forEach(function (k) {
+      const s = multiChart.options.scales[k];
+      s.min = undefined;
+      s.max = undefined;
+      if (s.ticks) s.ticks.stepSize = undefined;
+    });
+    clearChartPlotline(multiChart);
+    multiChart.update('none');
   });
   wrap.querySelector('#multiClear2').addEventListener('click', clearMultiCharts);
 }
@@ -1557,13 +1694,35 @@ if (!ivSeries.length) return;
       responsive: true, maintainAspectRatio: false, animation: false,
       interaction: { mode: 'nearest', intersect: false },
       plugins: {
-        legend: { labels: { color: ct('legend'), font: { size: 11 }, usePointStyle: true } },
+        legend: {
+          labels: { color: ct('legend'), font: { size: 11 }, usePointStyle: true },
+          onClick: function(e, legendItem, legend) {
+            // 沿用預設的顯示／隱藏切換
+            const idx = legendItem.datasetIndex;
+            const ds = legend.chart.data.datasets[idx];
+            if (ds) ds.hidden = !ds.hidden;
+            legend.chart.update();
+            // 曲線被隱藏後，Plotline 讀值表格也要同步移除該欄
+            refreshIVPlotlineTable();
+          },
+        },
         tooltip: {
           backgroundColor: 'rgba(28,28,30,0.94)', titleColor: '#0a84ff', bodyColor: '#f5f5f7',
           borderColor: 'rgba(255,255,255,0.14)', borderWidth: 1,
           callbacks: {
+            // 標題改用實際軸名稱（而非 X / Y），數值固定 3 位小數
             label: function(c) {
-              return c.dataset.label + '：X = ' + c.raw.x + '　Y = ' + c.raw.y;
+              const sc = (c.chart && c.chart.options && c.chart.options.scales) || {};
+              const xt = (sc.x && sc.x.title && sc.x.title.text) || 'X';
+              const isPow = c.dataset && c.dataset.yAxisID === 'yPow';
+              const yt = isPow
+                ? 'P (W)'
+                : ((sc.y && sc.y.title && sc.y.title.text) || 'Y');
+              const vx = Number(c.raw && c.raw.x);
+              const vy = Number(c.raw && c.raw.y);
+              return c.dataset.label + '：' + xt + ' = '
+                + (isFinite(vx) ? vx.toFixed(3) : '—') + '　' + yt + ' = '
+                + (isFinite(vy) ? vy.toFixed(3) : '—');
             },
           },
         },
@@ -1679,7 +1838,20 @@ if (!ivSeries.length) return;
     ivChart.options.scales.y.title.text = ref.headers[ny] || 'Y';
     ivChart.update('none');
   });
-  wrap.querySelector('#ivReset').addEventListener('click', function() { if (ivChart) { try { ivChart.resetZoom(); } catch(e) {} } });
+  wrap.querySelector('#ivReset').addEventListener('click', function() {
+    if (!ivChart) return;
+    try { ivChart.resetZoom(); } catch(e) {}
+    // 清除所有軸的手動 min/max 與刻度間隔（含雙擊軸範圍設定的 x / y / yPow）
+    Object.keys(ivChart.options.scales || {}).forEach(function(k) {
+      const s = ivChart.options.scales[k];
+      s.min = undefined;
+      s.max = undefined;
+      if (s.ticks) s.ticks.stepSize = undefined;
+    });
+    // 一併清掉讀值：圖上的垂直標記與底下表格
+    clearIVPlotline();
+    ivChart.update('none');
+  });
   wrap.querySelector('#ivClear').addEventListener('click', function() {
     ivSeries = [];
     ivSel.xi = -1; ivSel.yi = -1;
@@ -1896,11 +2068,12 @@ function resetChart(id) {
   const ch = Chart.getChart(id);
   if (!ch) return;
   try { if (ch.resetZoom) ch.resetZoom(); } catch(e) {}
-  // 清除所有軸的手動 min/max（含雙擊設定的 X/Y 範圍、自訂Y軸範圍面板）
+  // 清除所有軸的手動 min/max 與刻度間隔（含雙擊設定的 X/Y 範圍、自訂Y軸範圍面板）
   Object.keys(ch.options.scales || {}).forEach(function(k) {
     const s = ch.options.scales[k];
     s.min = undefined;
     s.max = undefined;
+    if (s.ticks) s.ticks.stepSize = undefined;
   });
   // 移除迴歸線
   const ri = ch.data.datasets.findIndex(d => d._reg);
@@ -1919,6 +2092,8 @@ function resetChart(id) {
     });
     cont.querySelectorAll('[data-role="slope-result"]').forEach(function(el) { el.textContent = ''; });
   }
+  // 一併清掉讀值：圖上的垂直標記與底下表格
+  clearChartPlotline(ch);
 }
 
 function calcSlope(dataArr, chart) {
@@ -2095,6 +2270,8 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
                   ch.options.scales[axisId].display = meta.hidden ? false : true;
                 }
                 ch.update();
+                // 曲線被隱藏後，Plotline 讀值表格也要同步移除該欄
+                refreshLinePlotlineTable(ch);
               },
             },
             tooltip: {
