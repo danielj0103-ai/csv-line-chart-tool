@@ -198,6 +198,34 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 .app-footer .author { color:var(--stat); font-weight:500; }
 .app-footer .ver { opacity:.75; margin-left:8px; }
 
+/* 已載入檔案清單（可逐一移除） */
+#fileChips { display:none; margin:10px 0 0; text-align:center; }
+#fileChips.on { display:block; }
+#fileChips .fc-label { font-size:12px; color:var(--stat); margin-bottom:6px; }
+#fileChips .fc-list { display:flex; flex-wrap:wrap; gap:6px; justify-content:center; }
+#fileChips .fc-chip {
+  display:inline-flex; align-items:center; gap:6px;
+  background:var(--panel); border:1px solid var(--hairline);
+  border-radius:980px; padding:4px 6px 4px 12px;
+  font-size:12px; color:var(--text); max-width:320px;
+}
+#fileChips .fc-chip .fc-name {
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+#fileChips .fc-chip .fc-kb { color:var(--dim); font-size:11px; }
+#fileChips .fc-x {
+  border:none; background:transparent; color:var(--dim);
+  cursor:pointer; font-size:14px; line-height:1; padding:0 4px;
+  border-radius:50%;
+}
+#fileChips .fc-x:hover { background:rgba(255,69,58,0.18); color:#ff453a; }
+#fileChips .fc-clear {
+  border:1px solid var(--hairline); background:var(--btn-bg);
+  color:var(--btn-fg); border-radius:980px; padding:4px 14px;
+  font-size:12px; cursor:pointer;
+}
+#fileChips .fc-clear:hover { background:var(--btn-hover); color:var(--btn-hover-fg); }
+
 /* 頁尾下載區 */
 .dl-band {
   margin-top:14px; padding-top:16px; border-top:1px solid var(--hairline);
@@ -226,13 +254,14 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 <body>
 <h1>📈 測試數據作圖產生器</h1>
 <div class="controls">
-  <label for="fileInput" title="可一次選多個檔案，最多 6 個疊圖比較">📂 選擇CSV／TXT／FCD檔案(可多選)</label>
+  <label for="fileInput" title="可重複點擊：每次選的檔案會累積加入，不會取代先前已載入的檔案，最多 6 個">📂 選擇CSV／TXT／FCD檔案(可多選)</label>
   <input type="file" id="fileInput" accept=".csv,.txt,.tsv,.dat,.fcd,*" multiple>>
   <span id="fileName">未選擇檔案</span>
   <label for="ivFileInput" style="margin-left:18px" title="可一次選多個檔案，最多 6 個疊圖比較">⚡ 選擇IV曲線的CSV／TXT／FCD檔案（可多選）</label>
   <input type="file" id="ivFileInput" accept=".csv,.txt,.fcd,*" multiple>
   <span id="ivFileName">未選擇檔案</span>
 </div>
+<div id="fileChips"></div>
 <div id="columnConfig"></div>
 <div id="loading">⏳ 正在處理資料，請稍候...</div>
 <div id="charts"></div>
@@ -681,8 +710,125 @@ const chartsDiv = document.getElementById('charts');
 const loading = document.getElementById('loading');
 const fileInput = document.getElementById('fileInput');
 const fileName = document.getElementById('fileName');
+const fileChipsDiv = document.getElementById('fileChips');
 const columnConfigDiv = document.getElementById('columnConfig');
 const plotlineToggle = document.getElementById('plotlineToggle');
+
+// ===== 檔案累積載入 =====
+// 需求：按「選擇檔案」後新選的檔案是「加到」既有清單，而不是取代。
+// loadedFiles 保存所有已加入的 File；1 個走單檔流程，2 個以上走多檔疊圖。
+let loadedFiles = [];       // File[]
+const parsedCache = new Map();   // 'name|size|lastModified' → analyzeTable 結果（避免重複解析）
+let pickedColNames = new Set();  // 上次勾選的欄位名（小寫），重新開面板時預設勾回
+
+function fileKey(f) { return f.name + '|' + f.size + '|' + f.lastModified; }
+
+// 只清掉單檔流程產生的疊圖與個別圖（多檔圖交給 clearMultiChartsKeepFiles 處理）
+function clearSingleCharts() {
+  chartsDiv.innerHTML = '';
+  allCharts.slice().forEach(function (ch) {
+    if (ch === multiChart) return;
+    try { ch.destroy(); } catch (e) {}
+    const i = allCharts.indexOf(ch);
+    if (i >= 0) allCharts.splice(i, 1);
+  });
+}
+
+// 依目前 loadedFiles 重新繪製（1 檔＝單檔流程，≥2 檔＝多檔疊圖，0 檔＝清空）
+function renderLoadedFiles() {
+  renderFileChips();
+  if (!loadedFiles.length) {
+    resetChartsToEmpty();
+    return;
+  }
+  if (loadedFiles.length === 1) {
+    // 單檔：先收掉多檔圖，避免兩種圖表同時殘留在畫面上
+    clearMultiChartsKeepFiles();
+    const f = loadedFiles[0];
+    loading.style.display = 'block';
+    readFileText(f).then(function (text) {
+      loading.style.display = 'none';
+      if (!text) { alert('檔案讀取失敗：' + f.name); return; }
+      parseAndBuild(text, f.name);
+    });
+  } else {
+    // 多檔：先收掉單檔的疊圖／個別圖，否則會與多檔疊圖同時顯示
+    clearSingleCharts();
+    loadMultiFiles(loadedFiles);
+  }
+}
+
+// 清空所有圖表與面板（檔案清單也一併清掉）
+function resetChartsToEmpty() {
+  clearMultiChartsKeepFiles();
+  chartsDiv.innerHTML = '';
+  columnConfigDiv.style.display = 'none';
+  columnConfigDiv.innerHTML = '';
+  allCharts.forEach(function (ch) { try { ch.destroy(); } catch (e) {} });
+  allCharts.length = 0;
+  loading.style.display = 'none';
+  fileName.textContent = '未選擇檔案';
+  renderFileChips();
+}
+
+// 已載入檔案清單（每個檔案可單獨 ✕ 移除）
+function renderFileChips() {
+  if (!fileChipsDiv) return;
+  if (!loadedFiles.length) {
+    fileChipsDiv.className = '';
+    fileChipsDiv.innerHTML = '';
+    return;
+  }
+  let html = '<div class="fc-label">已載入 ' + loadedFiles.length + ' 個檔案（可再按上方按鈕繼續加入，最多 '
+    + MULTI_MAX + ' 個）</div><div class="fc-list">';
+  loadedFiles.forEach(function (f, i) {
+    html += '<span class="fc-chip" title="' + escHtml(f.name) + '">'
+      + '<span class="fc-name">' + escHtml(f.name) + '</span>'
+      + '<span class="fc-kb">' + (f.size / 1024).toFixed(0) + ' KB</span>'
+      + '<button class="fc-x" data-i="' + i + '" title="移除這個檔案" aria-label="移除">✕</button>'
+      + '</span>';
+  });
+  if (loadedFiles.length >= 2) {
+    html += '<button class="fc-clear" id="fcClearAll">🗑️ 清除全部</button>';
+  }
+  html += '</div>';
+  fileChipsDiv.innerHTML = html;
+  fileChipsDiv.className = 'on';
+  fileChipsDiv.querySelectorAll('.fc-x').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const i = parseInt(this.getAttribute('data-i'), 10);
+      const gone = loadedFiles[i];
+      loadedFiles.splice(i, 1);
+      parsedCache.delete(fileKey(gone));
+      if (!loadedFiles.length) pickedColNames = new Set();
+      renderLoadedFiles();
+    });
+  });
+  const ca = document.getElementById('fcClearAll');
+  if (ca) ca.addEventListener('click', function () {
+    loadedFiles = [];
+    parsedCache.clear();
+    pickedColNames = new Set();
+    renderLoadedFiles();
+  });
+}
+
+// 把新選的檔案併入既有清單
+function appendFiles(list) {
+  const added = [], dup = [];
+  let over = 0;
+  list.forEach(function (f) {
+    const k = fileKey(f);
+    const exists = loadedFiles.some(function (g) { return fileKey(g) === k; });
+    if (exists) { dup.push(f.name); return; }
+    if (loadedFiles.length >= MULTI_MAX) { over++; return; }
+    loadedFiles.push(f);
+    added.push(f.name);
+  });
+  if (dup.length) alert('已在清單中，未重複加入：\n' + dup.join('\n'));
+  if (over) alert('最多只能同時載入 ' + MULTI_MAX + ' 個檔案，有 ' + over + ' 個未加入。');
+  return added.length;
+}
 
 // Plotline 開啟時停用拖曳縮放／平移：讀值模式下點擊的同時若滑鼠有微小位移，
 // 會被 zoom 外掛當成框選縮放，畫面被放大到只剩一小段，看起來像資料線消失。
@@ -1169,6 +1315,11 @@ function clearMultiCharts() {
   columnConfigDiv.style.display = 'none';
   columnConfigDiv.innerHTML = '';
   fileName.textContent = '未選擇檔案';
+  // 「清除全部」＝連同累積的檔案清單與解析快取一起清掉
+  loadedFiles = [];
+  parsedCache.clear();
+  pickedColNames = new Set();
+  renderFileChips();
 }
 
 // 多檔：載入並顯示欄位選擇面板
@@ -1177,15 +1328,23 @@ function loadMultiFiles(fileList) {
   const room = MULTI_MAX;
   const take = Array.from(fileList).slice(0, room);
   const skipped = fileList.length - take.length;
-  Promise.all(take.map(function (f) { return readFileText(f).then(function (t) { return { name: f.name, text: t }; }); }))
+  Promise.all(take.map(function (f) {
+    const k = fileKey(f);
+    // 已解析過的檔案直接沿用結果，避免每加一個檔就重讀全部
+    if (parsedCache.has(k)) {
+      return Promise.resolve({ key: k, name: f.name, cached: parsedCache.get(k) });
+    }
+    return readFileText(f).then(function (t) {
+      if (!t) return { key: k, name: f.name, cached: null };
+      const a = analyzeTable(t);
+      if (a) { a.name = f.name.replace(/\.[^.]+$/, ''); parsedCache.set(k, a); }
+      return { key: k, name: f.name, cached: a };
+    });
+  }))
     .then(function (items) {
       multiFiles = [];
       items.forEach(function (it) {
-        if (!it.text) return;
-        const a = analyzeTable(it.text);
-        if (!a) return;
-        a.name = it.name.replace(/\.[^.]+$/, '');
-        multiFiles.push(a);
+        if (it.cached) multiFiles.push(it.cached);
       });
       loading.style.display = 'none';
       fileName.textContent = '已載入 ' + multiFiles.length + ' 個檔案（共 ' + multiFiles.length + '/' + MULTI_MAX + '）'
@@ -1227,14 +1386,16 @@ function renderMultiPanel() {
   const checks = [];
   sorted.forEach(function (c, i) {
     const id = 'mcb_' + i;
+    // 記住上次的勾選；從未勾過時維持原本的「全選」預設
+    const on = pickedColNames.size ? pickedColNames.has(c.name.trim().toLowerCase()) : true;
     const lbl = document.createElement('label');
     const fileList = c.refs.map(function (r) { return r.file.name; }).join('、');
     lbl.style.cssText = 'display:flex;align-items:center;gap:6px;color:var(--tick);font-size:13px;cursor:pointer;padding:2px 0;break-inside:avoid';
-    lbl.innerHTML = '<input type="checkbox" id="' + id + '" checked style="margin:0"> <span>' + escHtml(c.name)
+    lbl.innerHTML = '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="margin:0"> <span>' + escHtml(c.name)
       + ' <span style="color:var(--dim);font-size:11px">（' + escHtml(fileList) + '）</span></span>';
     lbl.title = c.name;
     box.appendChild(lbl);
-    checks.push({ id: id, col: c });
+    checks.push({ id: id, col: c, name: c.name });
   });
 
   document.getElementById('multiSelectAll').addEventListener('change', function () {
@@ -1244,6 +1405,8 @@ function renderMultiPanel() {
   document.getElementById('multiConfirm').addEventListener('click', function () {
     const picked = checks.filter(function (c) { return document.getElementById(c.id).checked; });
     if (!picked.length) { alert('請至少選擇一個欄位'); return; }
+    // 記住這次勾了哪些欄位，加入其他檔案後重開面板時會預設勾回
+    pickedColNames = new Set(picked.map(function (c) { return c.name.trim().toLowerCase(); }));
     columnConfigDiv.style.display = 'none';
     buildMultiChart(picked.map(function (p) { return p.col; }));
   });
@@ -1925,42 +2088,15 @@ if (!ivSeries.length) return;
 let currentData = null;
 
 fileInput.addEventListener('change', function(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  multiBatch = Array.from(e.target.files || []);
-  clearMultiCharts();
-  fileName.textContent = file.name + ' (' + (file.size / 1024).toFixed(0) + ' KB)';
-  loading.style.display = 'block';
-  chartsDiv.innerHTML = '';
-  columnConfigDiv.style.display = 'none';
-  columnConfigDiv.innerHTML = '';
-  allCharts.forEach(ch => { try { ch.destroy(); } catch(e) {} });
-  allCharts.length = 0;
-
-  const reader = new FileReader();
-  reader.onload = function(evt) { parseAndBuild(evt.target.result, file.name); };
-  reader.onerror = function() { loading.style.display = 'none'; };
-  // UTF-8 BOM → UTF-8；否則先試 Big5，若出現無法解碼的字元則改用 UTF-8
-  reader.readAsArrayBuffer(file);
-  reader.onload = function(evt) {
-    const buf = new Uint8Array(evt.target.result);
-    let text = null;
-    if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) {
-      text = new TextDecoder('utf-8').decode(buf);
-    } else {
-      try { text = new TextDecoder('big5').decode(buf); } catch (err) { text = null; }
-      if (text === null || text.indexOf('\uFFFD') !== -1) {
-        try { text = new TextDecoder('utf-8').decode(buf); } catch (err) { text = ''; }
-      }
-    }
-    const clean = text.replace(/^\uFEFF/, '');
-    // 單檔 → 原本流程；多檔 → 疊圖比較
-    if (multiBatch.length <= 1) {
-      parseAndBuild(clean, file.name);
-    } else {
-      loadMultiFiles(multiBatch);
-    }
-  };
+  const picked = Array.from(e.target.files || []);
+  // 清空 input.value，否則連續挑同一組檔案不會再觸發 change
+  e.target.value = '';
+  if (!picked.length) return;
+  // 新選的檔案是「加到」既有清單；清單從空開始時等同原本的取代行為
+  const added = appendFiles(picked);
+  if (!added) return;
+  multiBatch = loadedFiles.slice();
+  renderLoadedFiles();
 });
 
 // 解析資料表 → { headers, numericCols, times, series, labels, timeCol, xIsTime }
@@ -2103,11 +2239,14 @@ function parseAndBuild(csvText, filename) {
     colSorted.forEach(function(entry, newIdx) {
       const col = entry.col;
       const id = 'colcb_' + newIdx;
+      const name = headers[col];
+      // 記住上次的勾選；從未勾過時維持原本的「全選」預設
+      const on = pickedColNames.size ? pickedColNames.has(String(name).trim().toLowerCase()) : true;
       const lbl = document.createElement('label');
       lbl.style.cssText = 'display:flex;align-items:center;gap:6px;color:var(--tick);font-size:13px;cursor:pointer;padding:2px 0;break-inside:avoid';
-      lbl.innerHTML = '<input type="checkbox" id="' + id + '" checked style="margin:0"> <span>' + headers[col] + '</span>';
+      lbl.innerHTML = '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="margin:0"> <span>' + name + '</span>';
       cbDiv.appendChild(lbl);
-      checkboxes.push({ id, col });
+      checkboxes.push({ id, col, name });
     });
 
     document.getElementById('selectAllCols').addEventListener('change', function() {
@@ -2118,6 +2257,10 @@ function parseAndBuild(csvText, filename) {
     document.getElementById('confirmCols').addEventListener('click', function() {
       const selected = checkboxes.filter(cb => document.getElementById(cb.id).checked).map(cb => cb.col);
       if (selected.length === 0) return;
+      // 記住這次勾了哪些欄位，加入其他檔案後重開面板時會預設勾回
+      pickedColNames = new Set(checkboxes.filter(function (cb) {
+        return document.getElementById(cb.id).checked;
+      }).map(function (cb) { return String(cb.name).trim().toLowerCase(); }));
       columnConfigDiv.style.display = 'none';
       buildCharts(currentData.times, currentData.series, currentData.labels, selected, currentData.headers, currentData.timeCol);
     });
