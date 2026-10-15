@@ -197,6 +197,30 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 }
 .app-footer .author { color:var(--stat); font-weight:500; }
 .app-footer .ver { opacity:.75; margin-left:8px; }
+
+/* 頁尾下載區 */
+.dl-band {
+  margin-top:14px; padding-top:16px; border-top:1px solid var(--hairline);
+  text-align:center;
+}
+.dl-band .dl-title {
+  color:var(--stat); font-size:12px; margin-bottom:10px;
+}
+.dl-band .dl-title b { color:var(--accent); font-weight:600; }
+.dl-band .dl-grid {
+  display:inline-flex; flex-wrap:wrap; justify-content:center; gap:8px;
+}
+.dl-band .dl-grid a {
+  display:inline-block; text-decoration:none;
+  background:var(--accent); color:#fff;
+  padding:9px 20px; border-radius:980px;
+  font-size:13px; font-weight:500; letter-spacing:.2px;
+  box-shadow:var(--shadow);
+  transition:filter .18s, transform .12s;
+}
+.dl-band .dl-grid a:hover { filter:brightness(1.12); }
+.dl-band .dl-grid a:active { transform:translateY(1px); }
+@media (max-width:560px) { .dl-band .dl-grid a { width:100%; } }
 </style>
 </head>
 <body>
@@ -220,7 +244,46 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 </div>
 <footer class="app-footer">
   <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v2.7</span>
+
+  <div class="dl-band">
+    <div class="dl-title">下載離線使用：主程式與說明書，建議<b>三個都下載</b>放到同一資料夾</div>
+    <div class="dl-grid">
+      <a id="dlTool" href="測試數據作圖產生器.html" download="測試數據作圖產生器.html">💾 下載測試數據作圖產生器到本地</a>
+      <a id="dlManual" href="測試數據作圖產生器_使用說明書.docx" download="測試數據作圖產生器_使用說明書.docx">📘 下載詳細操作說明書</a>
+      <a id="dlQuick" href="測試數據作圖產生器_簡易手冊.docx" download="測試數據作圖產生器_簡易手冊.docx">📗 下載簡易手冊</a>
+    </div>
+  </div>
 </footer>
+
+<script>
+// 下載備援：主程式連結是「相對自己的路徑」，若檔案被改名或換資料夾開，
+// fetch 會失敗，此時改以目前頁面內容產生 Blob 讓下載仍然可用。
+(function () {
+  var TOOL = document.getElementById('dlTool');
+  if (!TOOL) return;
+  var fallback = false;
+  fetch(TOOL.getAttribute('href'), { method: 'GET', cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); })
+    .catch(function () { fallback = true; })
+    .then(function () { _ready(fallback); });
+
+  function _ready(useFallback) {
+    TOOL.addEventListener('click', function (e) {
+      if (!useFallback) return;              // 連結正常就讓瀏覽器自己處理
+      e.preventDefault();
+      var html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+      var url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = TOOL.getAttribute('download') || '測試數據作圖產生器.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    });
+  }
+})();
+</script>
 
 <script>
 if (typeof ChartZoom !== 'undefined') Chart.register(ChartZoom);
