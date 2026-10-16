@@ -1264,37 +1264,57 @@ function attachColDrag(outDiv, colOrder, onChange) {
     return to;
   }
 
+// 依「欄位寬度」推算各欄在新順序下的自然位置（不受正在播放的動畫影響）。
+  // FLIP 若用 getBoundingClientRect() 量 before，會量到別欄「動畫播到一半」的位置，
+  // 快速連續跨越時 delta 會愈縮愈小並把上一段動畫取消重開，結果看起來就是沒動畫。
+  // 這裡改以寬度累加求出純粹的版面位置；每欄寬度在拖曳期間固定，故可精確推算。
+  function naturals(order) {
+    const d = drag;
+    const shift = outDiv.scrollLeft - d.startScroll;
+    const m = {};
+    let x = d.baseLeft;
+    for (let i = 0; i < order.length; i++) {
+      m[order[i]] = x;
+      x += d.widths[order[i]];
+    }
+    for (const k in m) m[k] -= shift;
+    return m;
+  }
+
   function applyShift() {
     const d = drag;
     const to = targetIndex();
     if (to !== d.to) {
-      // FLIP：先量各欄位置 → 改變 DOM 順序 → 再量，用差值做補間
-      const before = {};
+      const order = ths().map(function (th) { return th.getAttribute('data-col'); });
+      const at = order.indexOf(d.label);
+      order.splice(at, 1);
+      order.splice(to, 0, d.label);
+      // 量「當下視覺位置」：這正是新動畫該從哪裡起跳（含前一段動畫的進度，
+      // 因此中途改變方向或加速都不會跳動）
+      const visual = {};
       d.hs.forEach(function (th) {
         const l = th.getAttribute('data-col');
-        before[l] = th.getBoundingClientRect().left;
+        visual[l] = th.getBoundingClientRect().left;
       });
       if (moveColumnTo(d.label, to)) {
         d.hs = ths();
         d.cells = cellsOf(d.label);
         d.th = findTh(d.label);
-        const afterLeft = {};
-        d.hs.forEach(function (th) {
-          afterLeft[th.getAttribute('data-col')] = th.getBoundingClientRect().left;
-        });
-        // 被推開的欄：從舊位置滑到新位置（被拖的那欄不給動畫）
+        const after = naturals(order);
         d.hs.forEach(function (th) {
           const l = th.getAttribute('data-col');
-          if (l === d.label) return;
-          const delta = before[l] - afterLeft[l];
+          if (l === d.label) return;              // 被拖的欄不參與動畫
+          const delta = visual[l] - after[l];
           if (Math.abs(delta) > 0.5) flipTo([th].concat(cellsOf(l)), delta);
         });
-        d.slotLeft = afterLeft[d.label];
+        d.slotLeft = after[d.label];
       }
       d.to = to;
       clearMarks();
-      const mark = findTh(ths()[to] ? ths()[to].getAttribute('data-col') : '');
-      if (mark && to !== d.from) mark.classList.add('pl-drop-target');
+      const list = ths();
+      if (to >= 0 && to < list.length && to !== d.from) {
+        list[to].classList.add('pl-drop-target');
+      }
     }
     followPointer();
   }
@@ -1333,10 +1353,16 @@ function attachColDrag(outDiv, colOrder, onChange) {
       grabX: e.clientX, px: e.clientX,
       grabOffset: e.clientX - r.left,
       width: r.width,
-      orig: hs.map(function (x) {
+orig: hs.map(function (x) {
         const q = x.getBoundingClientRect();
         return { left: q.left, w: q.width };
       }),
+      widths: (function () {
+        const w = {};
+        hs.forEach(function (x) { w[x.getAttribute('data-col')] = x.getBoundingClientRect().width; });
+        return w;
+      })(),
+      baseLeft: r.left,
       hs: hs, cells: cellsOf(th.getAttribute('data-col')),
       slotLeft: r.left,
       box: outDiv.getBoundingClientRect(),
