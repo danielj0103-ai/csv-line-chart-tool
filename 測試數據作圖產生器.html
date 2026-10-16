@@ -1247,13 +1247,15 @@ function attachColDrag(outDiv, colOrder, onChange) {
     d.cells.forEach(function (td) { td.style.transform = st; });
   }
 
-  // 依游標位置決定要插到第幾欄
+// 依游標位置決定要插到第幾欄。
+  // 以「拖曳開始時」的原始版面位置 + 游標位移來算，
+  // 不可用 d.slotLeft：它會隨每次重排而跳動，會造成插入點在邊界附近
+  // 反覆震盪、不停取消並重啟動畫，看起來就像沒有動畫。
   function targetIndex() {
     const d = drag;
-    const eff = (d.px - d.grabX);
-    const slotLeft = d.orig[d.from].left + (d.slotLeft - d.orig[d.from].left);
-    const center = slotLeft + eff - (outDiv.scrollLeft - d.startScroll)
-                + d.width / 2;
+    const scrolled = outDiv.scrollLeft - d.startScroll;
+    const eff = (d.px - d.grabX) + scrolled;
+    const center = d.orig[d.from].left + eff + d.width / 2;
     let to = 0;
     for (let k = 0; k < d.orig.length; k++) {
       if (k === d.from) continue;
@@ -1370,26 +1372,43 @@ function attachColDrag(outDiv, colOrder, onChange) {
     window.removeEventListener('pointercancel', onUp);
     if (d.timer) clearInterval(d.timer);
 
-    if (d.active) {
-      // 收尾：把落點欄滑到定位，並移除所有殘留的位移／動畫
+if (d.active) {
+      // 被拖的欄：從目前貼游標的位置，平滑歸位到它的欄位插槽。
+      // 不可直接清掉 transform，否則放開的瞬间會跳一下。
       const th = findTh(d.label);
-      const els = [th].concat(cellsOf(d.label));
-      cancelAnims(els);
-      els.forEach(function (el) { el.style.transform = ''; });
-      table.querySelectorAll('th, td').forEach(function (el) {
+      [th].concat(cellsOf(d.label)).forEach(function (el) {
         cancelAnims([el]);
+        const cur = el.style.transform;
+        el.style.transform = '';
+        if (cur && el.animate) {
+          el._flip = el.animate(
+            [{ transform: cur }, { transform: 'translateX(0px)' }],
+            { duration: FLIP_MS, easing: FLIP_EASE }
+          );
+        }
       });
       th.classList.remove('pl-dragging');
       table.classList.remove('pl-dragging-table');
       clearMarks();
     }
 
-    if (!d.active) return;
+if (!d.active) return;
     const all = ths().map(function (x) { return x.getAttribute('data-col'); });
     const arr = all.filter(function (l) { return l !== d.label; });
     arr.splice(d.to, 0, d.label);
     if (colOrder) colOrder.splice(0, colOrder.length, ...arr);
-    if (onChange) onChange();
+    // 拖曳過程中 DOM 欄位順序已經就是最終順序了，
+    // 若再呼叫 onChange() 會整張表格重繪，把上面的歸位動畫洗掉而變成跳位，
+    // 所以只有在順序真的不一致時才重繪。
+    const nowOrder = ths().map(function (x) { return x.getAttribute('data-col'); });
+    const same = nowOrder.length === arr.length
+      && nowOrder.every(function (l, i) { return l === arr[i]; });
+    if (same) {
+      // 只清掉 HTML 快取，避免下次比對用到舊字串
+      outDiv._plHtml = null;
+    } else if (onChange) {
+      onChange();
+    }
   }
 
   headRow.addEventListener('pointerdown', onDown);
