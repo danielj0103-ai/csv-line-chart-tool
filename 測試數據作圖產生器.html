@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
@@ -199,9 +199,20 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 .app-footer .ver { opacity:.75; margin-left:8px; }
 
 /* Plotline 讀值表格：欄標題可拖曳換位 + 差異欄標題可雙擊選配對 */
-.pl-table thead th[draggable="true"] { cursor:grab; user-select:none; }
-.pl-table thead th[draggable="true"]:hover { background:var(--btn-bg); border-radius:4px; }
-.pl-table thead th.pl-dragging { opacity:.4; cursor:grabbing; }
+.pl-table thead th[data-drag="1"] {
+  cursor:grab; user-select:none; touch-action:none; position:relative;
+}
+.pl-table thead th[data-drag="1"]:hover { background:var(--btn-bg); border-radius:4px; }
+/* 被拖的欄：浮在別人上面並帶陰影，且不跟著 transition（必須即時跟手） */
+.pl-table thead th.pl-dragging {
+  cursor:grabbing; z-index:5; border-radius:4px;
+  box-shadow:0 10px 26px rgba(0,0,0,.28);
+}
+/* 被擠開的欄位滑動讓位 */
+.pl-table.pl-dragging-table tbody td,
+.pl-table.pl-dragging-table thead th[data-drag="1"]:not(.pl-dragging) {
+  transition:transform .18s cubic-bezier(.2,.8,.3,1);
+}
 .pl-table thead th.pl-drop-target { box-shadow:inset 3px 0 0 var(--accent); }
 .pl-table thead th[data-col$="(V)"], .pl-table thead th[data-col$="(mV)"] {
   text-decoration:underline dotted; text-underline-offset:3px; cursor:pointer;
@@ -1091,7 +1102,7 @@ function renderPlotlineTable(outDiv, records, asc, dsColors, colOrder, onColOrde
   shown.forEach(function(l) {
     const dsi = labelDs[l];
     const col = (dsi !== undefined && dsColors) ? dsColors[dsi] : '';
-    html += '<th' + (canDrag ? ' draggable="true"' : '')
+    html += '<th' + (canDrag ? ' data-drag="1"' : '')
       + (col ? ' style="color:' + escHtml(col) + '"' : '')
       + ' data-col="' + escHtml(l) + '"'
       + (canDrag ? ' title="可拖曳調整欄位順序"' : '') + '>' + escHtml(l) + '</th>';
@@ -1145,60 +1156,168 @@ function orderLabels(labels, order) {
 }
 
 // 欄標題拖曳換位置：把整欄（標題＋每一列的資料）一起搬，序號欄固定不動
+// 用 pointer events 實作（觸控也能拖），拖曳中被拖的欄跟著游標走，
+// 其餘欄位即時位移讓位，放開後才真正寫入欄位順序。
 function attachColDrag(outDiv, colOrder, onChange) {
   const table = outDiv.querySelector('table.pl-table');
   if (!table || table._dragBound) return;
   table._dragBound = true;
+  const headRow = table.querySelector('thead tr');
+  if (!headRow) return;
   // 初次綁定時把當下的自然順序寫回去，之後才能直接改這個陣列
   if (colOrder && !colOrder.length) {
-    table.querySelectorAll('thead th[draggable="true"]').forEach(function (th) {
+    headRow.querySelectorAll('th[data-drag="1"]').forEach(function (th) {
       colOrder.push(th.getAttribute('data-col'));
     });
   }
-  let fromLabel = null;
-  function clearMark() {
-    table.querySelectorAll('th.pl-drop-target').forEach(function (el) { el.classList.remove('pl-drop-target'); });
+
+  const MOVE_THRESHOLD = 4;   // 超過這個位移才算拖曳，避免與點擊／雙擊衝突
+  const EDGE_ZONE = 56;       // 自動捲動的邊緣觸發區
+  let drag = null;
+
+  function ths() {
+    return Array.prototype.slice.call(
+      table.querySelectorAll('thead th[data-drag="1"]'));
   }
-  table.querySelectorAll('thead th[draggable="true"]').forEach(function (th) {
-    th.addEventListener('dragstart', function (e) {
-      fromLabel = th.getAttribute('data-col');
-      th.classList.add('pl-dragging');
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = 'move';
-        try { e.dataTransfer.setData('text/plain', fromLabel); } catch (err) {}
-      }
+  function rowsOf() {
+    return Array.prototype.slice.call(table.querySelectorAll('tbody tr'));
+  }
+  function clearMarks() {
+    table.querySelectorAll('th.pl-drop-target').forEach(function (el) {
+      el.classList.remove('pl-drop-target');
     });
-    th.addEventListener('dragend', function () {
-      fromLabel = null;
+  }
+  // 一次套用位移：標題與該欄每一列的儲存格一起動（第 0 格是固定的序號欄）
+  function paint(k, dx) {
+    const st = dx ? 'translateX(' + dx + 'px)' : '';
+    const hs = drag.hs;
+    if (hs[k]) hs[k].style.transform = st;
+    drag.rows.forEach(function (tr) {
+      const td = tr.cells[k + 1];
+      if (td) td.style.transform = st;
+    });
+  }
+  function resetStyles() {
+    const hs = ths();
+    hs.forEach(function (th) {
+      th.style.transform = '';
       th.classList.remove('pl-dragging');
-      clearMark();
     });
-    th.addEventListener('dragover', function (e) {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      if (th.classList.contains('pl-dragging')) return;
-      clearMark();
-      th.classList.add('pl-drop-target');
+    rowsOf().forEach(function (tr) {
+      for (let i = 1; i < tr.cells.length; i++) tr.cells[i].style.transform = '';
     });
-    th.addEventListener('dragleave', function () {
-      th.classList.remove('pl-drop-target');
+    table.classList.remove('pl-dragging-table');
+    clearMarks();
+  }
+
+  // 依游標位置算出插入點，並把各欄位移畫出來
+  function applyShift() {
+    const d = drag;
+    const scrolled = outDiv.scrollLeft - d.startScroll;
+    const eff = (d.px - d.grabX) + scrolled;   // 被拖欄相對起始位置的有效位移
+    const dw = d.orig[d.from].w;
+    const dCenter = d.orig[d.from].left + eff + d.orig[d.from].w / 2;
+
+    // 算插入索引：數有幾欄的中心落在游標左邊（不計被拖的那欄）
+    let to = 0;
+    for (let k = 0; k < d.orig.length; k++) {
+      if (k === d.from) continue;
+      if (d.orig[k].left + d.orig[k].w / 2 < dCenter) to++;
+    }
+    d.to = to;
+
+    for (let k = 0; k < d.orig.length; k++) {
+      let shift = 0;
+      if (k === d.from) shift = eff;
+      else if (to > d.from && k > d.from && k <= to) shift = -dw;
+      else if (to < d.from && k >= to && k < d.from) shift = dw;
+      paint(k, shift);
+    }
+    clearMarks();
+    if (to >= 0 && to < d.hs.length && to !== d.from) {
+      d.hs[to].classList.add('pl-drop-target');
+    }
+  }
+
+// 拖曳中把游標移到容器邊緣時自動捲動，越靠近邊緣捲越快。
+  // 用 setInterval 而非 requestAnimationFrame：無頭環境不會推進 rAF，
+  // 且容器位置在拖曳期間不會變動，讀一次版面即可，不必每幀量。
+  function autoScrollTick() {
+    if (!drag) return;
+    const box = drag.box;
+    let v = 0;
+    if (drag.px < box.left + EDGE_ZONE) {
+      v = -Math.max(1, Math.ceil((box.left + EDGE_ZONE - drag.px) / 4));
+    } else if (drag.px > box.right - EDGE_ZONE) {
+      v = Math.max(1, Math.ceil((drag.px - (box.right - EDGE_ZONE)) / 4));
+    }
+    if (v) {
+      const before = outDiv.scrollLeft;
+      outDiv.scrollLeft += v;
+      if (outDiv.scrollLeft !== before) applyShift();
+    }
+  }
+
+  function onDown(e) {
+    if (e.button !== undefined && e.button !== 0) return;
+    const th = e.target && e.target.closest
+      ? e.target.closest('th[data-drag="1"]') : null;
+    if (!th) return;
+    const hs = ths();
+    const from = hs.indexOf(th);
+    if (from < 0) return;
+    // 記下拖曳當下的實際位置與寬度，之後用位移量換算（不受捲動／transform 影響）
+    const orig = hs.map(function (x) {
+      const r = x.getBoundingClientRect();
+      return { left: r.left, w: r.width };
     });
-    th.addEventListener('drop', function (e) {
-      e.preventDefault();
-      clearMark();
-      const toLabel = th.getAttribute('data-col');
-      if (!fromLabel || !toLabel || fromLabel === toLabel) return;
-      const all = orderLabels(Array.prototype.map.call(
-        table.querySelectorAll('thead th[draggable="true"]'), function (x) { return x.getAttribute('data-col'); }),
-        colOrder);
-      const arr = all.filter(function (l) { return l !== fromLabel; });
-      const at = arr.indexOf(toLabel);
-      if (at < 0) return;
-      arr.splice(at, 0, fromLabel);
-      if (colOrder) colOrder.splice(0, colOrder.length, ...arr);
-      if (onChange) onChange();
-    });
-  });
+    drag = {
+      th: th, from: from, to: from,
+      label: th.getAttribute('data-col'),
+      grabX: e.clientX, px: e.clientX,
+orig: orig, hs: hs, rows: rowsOf(),
+      box: outDiv.getBoundingClientRect(),
+      startScroll: outDiv.scrollLeft,
+      active: false, timer: 0
+    };
+    // 刻意不呼叫 preventDefault()，否則雙擊選配對會失效
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }
+
+  function onMove(e) {
+    if (!drag) return;
+    drag.px = e.clientX;
+    if (!drag.active) {
+      if (Math.abs(e.clientX - drag.grabX) < MOVE_THRESHOLD) return;
+      drag.active = true;
+      table.classList.add('pl-dragging-table');
+      drag.th.classList.add('pl-dragging');
+      drag.timer = setInterval(autoScrollTick, 16);
+    }
+    e.preventDefault();
+    applyShift();
+  }
+
+  function onUp() {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    if (d.timer) clearInterval(d.timer);
+    resetStyles();
+    if (!d.active || d.to === d.from) return;
+    const all = ths().map(function (x) { return x.getAttribute('data-col'); });
+    const arr = all.filter(function (l) { return l !== d.label; });
+    arr.splice(d.to, 0, d.label);
+    if (colOrder) colOrder.splice(0, colOrder.length, ...arr);
+    if (onChange) onChange();
+  }
+
+  headRow.addEventListener('pointerdown', onDown);
 }
 
 function setupPlotline(chart, canvas, labels, cols) {
