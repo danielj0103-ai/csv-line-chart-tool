@@ -198,20 +198,17 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 .app-footer .author { color:var(--stat); font-weight:500; }
 .app-footer .ver { opacity:.75; margin-left:8px; }
 
-/* Plotline 讀值表格：欄標題可拖曳換位 + 差異欄標題可雙擊選配對 */
+/* Plotline 讀值表格：欄標題可拖曳換位 + 差異欄標題可雙擊選配對
+   讓位動畫由 attachColDrag() 以 Web Animations API 播放（FLIP），
+   這裡只負責拖曳期間的靜態樣式。 */
 .pl-table thead th[data-drag="1"] {
   cursor:grab; user-select:none; touch-action:none; position:relative;
 }
 .pl-table thead th[data-drag="1"]:hover { background:var(--btn-bg); border-radius:4px; }
-/* 被拖的欄：浮在別人上面並帶陰影，且不跟著 transition（必須即時跟手） */
+/* 被拖的欄浮在別人上面並帶陰影；它不參與 FLIP 動畫，transform 直接跟游標 */
 .pl-table thead th.pl-dragging {
   cursor:grabbing; z-index:5; border-radius:4px;
   box-shadow:0 10px 26px rgba(0,0,0,.28);
-}
-/* 被擠開的欄位滑動讓位 */
-.pl-table.pl-dragging-table tbody td,
-.pl-table.pl-dragging-table thead th[data-drag="1"]:not(.pl-dragging) {
-  transition:transform .18s cubic-bezier(.2,.8,.3,1);
 }
 .pl-table thead th.pl-drop-target { box-shadow:inset 3px 0 0 var(--accent); }
 .pl-table thead th[data-col$="(V)"], .pl-table thead th[data-col$="(mV)"] {
@@ -1113,7 +1110,8 @@ function renderPlotlineTable(outDiv, records, asc, dsColors, colOrder, onColOrde
     shown.forEach(function(l) {
       let cell = null;
       for (let i = 0; i < r.cells.length; i++) if (r.cells[i].label === l) { cell = r.cells[i]; break; }
-      html += '<td>' + (cell ? escHtml(cell.text) : '') + '</td>';
+      html += '<td data-col="' + escHtml(l) + '">'
+        + (cell ? escHtml(cell.text) : '') + '</td>';
     });
     html += '</tr>';
   });
@@ -1156,15 +1154,17 @@ function orderLabels(labels, order) {
 }
 
 // 欄標題拖曳換位置：把整欄（標題＋每一列的資料）一起搬，序號欄固定不動
-// 用 pointer events 實作（觸控也能拖），拖曳中被拖的欄跟著游標走，
-// 其餘欄位即時位移讓位，放開後才真正寫入欄位順序。
+//
+// 作法與 Motion 的 Reorder 相同：拖曳過程中「真的」改變 DOM 欄位順序，
+// 改變前後各量一次位置，把差值當作起始位移再用動畫補回（FLIP），
+// 被拖的那欄則以 transform 即時貼齊游標、不參與動畫。
+// 用 pointer events 實作，所以觸控也能拖。
 function attachColDrag(outDiv, colOrder, onChange) {
   const table = outDiv.querySelector('table.pl-table');
   if (!table || table._dragBound) return;
   table._dragBound = true;
   const headRow = table.querySelector('thead tr');
   if (!headRow) return;
-  // 初次綁定時把當下的自然順序寫回去，之後才能直接改這個陣列
   if (colOrder && !colOrder.length) {
     headRow.querySelectorAll('th[data-drag="1"]').forEach(function (th) {
       colOrder.push(th.getAttribute('data-col'));
@@ -1173,75 +1173,133 @@ function attachColDrag(outDiv, colOrder, onChange) {
 
   const MOVE_THRESHOLD = 4;   // 超過這個位移才算拖曳，避免與點擊／雙擊衝突
   const EDGE_ZONE = 56;       // 自動捲動的邊緣觸發區
+  const FLIP_MS = 200;
+  const FLIP_EASE = 'cubic-bezier(.2,.8,.3,1)';
   let drag = null;
 
   function ths() {
     return Array.prototype.slice.call(
       table.querySelectorAll('thead th[data-drag="1"]'));
   }
-  function rowsOf() {
-    return Array.prototype.slice.call(table.querySelectorAll('tbody tr'));
+  function findTh(label) {
+    return table.querySelector('thead th[data-col="' + CSS.escape(label) + '"]');
+  }
+  // 同一欄的所有儲存格（每個 tbody 列各一格），序號欄不在此列
+  function cellsOf(label) {
+    return Array.prototype.slice.call(
+      table.querySelectorAll('tbody td[data-col="' + CSS.escape(label) + '"]'));
+  }
+  function allRows() {
+    const rows = [headRow];
+    table.querySelectorAll('tbody tr').forEach(function (tr) { rows.push(tr); });
+    return rows;
   }
   function clearMarks() {
     table.querySelectorAll('th.pl-drop-target').forEach(function (el) {
       el.classList.remove('pl-drop-target');
     });
   }
-  // 一次套用位移：標題與該欄每一列的儲存格一起動（第 0 格是固定的序號欄）
-  function paint(k, dx) {
-    const st = dx ? 'translateX(' + dx + 'px)' : '';
-    const hs = drag.hs;
-    if (hs[k]) hs[k].style.transform = st;
-    drag.rows.forEach(function (tr) {
-      const td = tr.cells[k + 1];
-      if (td) td.style.transform = st;
+  function cancelAnims(els) {
+    els.forEach(function (el) {
+      if (!el._flip) return;
+      el._flip.cancel();
+      el._flip = null;
     });
   }
-  function resetStyles() {
-    const hs = ths();
-    hs.forEach(function (th) {
-      th.style.transform = '';
-      th.classList.remove('pl-dragging');
+  // 把某欄從 from 位置搬到 to 位置（直接動 DOM，含表頭與每一列）
+  function moveColumnTo(label, to) {
+    const order = ths().map(function (th) { return th.getAttribute('data-col'); });
+    const at = order.indexOf(label);
+    if (at < 0 || at === to) return false;
+    order.splice(at, 1);
+    order.splice(to, 0, label);
+    allRows().forEach(function (tr) {
+      const map = {};
+      for (let i = 1; i < tr.cells.length; i++) {
+        map[tr.cells[i].getAttribute('data-col')] = tr.cells[i];
+      }
+      const frag = document.createDocumentFragment();
+      order.forEach(function (l) { if (map[l]) frag.appendChild(map[l]); });
+      while (tr.cells.length > 1) tr.removeChild(tr.cells[1]);
+      while (frag.firstChild) tr.appendChild(frag.firstChild);
     });
-    rowsOf().forEach(function (tr) {
-      for (let i = 1; i < tr.cells.length; i++) tr.cells[i].style.transform = '';
-    });
-    table.classList.remove('pl-dragging-table');
-    clearMarks();
+    return true;
   }
-
-  // 依游標位置算出插入點，並把各欄位移畫出來
-  function applyShift() {
+  // 把一組元素從位移 d 平滑回到 0（FLIP 的補間）
+  function flipTo(els, d) {
+    els.forEach(function (el) {
+      cancelAnims([el]);
+      if (!el.animate) return;                    // 極舊瀏覽器就直接跳
+      el._flip = el.animate(
+        [{ transform: 'translateX(' + d + 'px)' }, { transform: 'translateX(0px)' }],
+        { duration: FLIP_MS, easing: FLIP_EASE }
+      );
+    });
+  }
+  // 被拖的欄：不參與動畫，直接貼齊游標
+  function followPointer() {
     const d = drag;
-    const scrolled = outDiv.scrollLeft - d.startScroll;
-    const eff = (d.px - d.grabX) + scrolled;   // 被拖欄相對起始位置的有效位移
-    const dw = d.orig[d.from].w;
-    const dCenter = d.orig[d.from].left + eff + d.orig[d.from].w / 2;
+    const slotLeft = d.slotLeft - (outDiv.scrollLeft - d.startScroll);
+    const want = d.px - d.grabOffset;
+    const shift = want - slotLeft;
+    const st = Math.abs(shift) < 0.01 ? '' : 'translateX(' + shift.toFixed(2) + 'px)';
+    d.th.style.transform = st;
+    d.cells.forEach(function (td) { td.style.transform = st; });
+  }
 
-    // 算插入索引：數有幾欄的中心落在游標左邊（不計被拖的那欄）
+  // 依游標位置決定要插到第幾欄
+  function targetIndex() {
+    const d = drag;
+    const eff = (d.px - d.grabX);
+    const slotLeft = d.orig[d.from].left + (d.slotLeft - d.orig[d.from].left);
+    const center = slotLeft + eff - (outDiv.scrollLeft - d.startScroll)
+                + d.width / 2;
     let to = 0;
     for (let k = 0; k < d.orig.length; k++) {
       if (k === d.from) continue;
-      if (d.orig[k].left + d.orig[k].w / 2 < dCenter) to++;
+      if (d.orig[k].left + d.orig[k].w / 2 < center) to++;
     }
-    d.to = to;
-
-    for (let k = 0; k < d.orig.length; k++) {
-      let shift = 0;
-      if (k === d.from) shift = eff;
-      else if (to > d.from && k > d.from && k <= to) shift = -dw;
-      else if (to < d.from && k >= to && k < d.from) shift = dw;
-      paint(k, shift);
-    }
-    clearMarks();
-    if (to >= 0 && to < d.hs.length && to !== d.from) {
-      d.hs[to].classList.add('pl-drop-target');
-    }
+    return to;
   }
 
-// 拖曳中把游標移到容器邊緣時自動捲動，越靠近邊緣捲越快。
-  // 用 setInterval 而非 requestAnimationFrame：無頭環境不會推進 rAF，
-  // 且容器位置在拖曳期間不會變動，讀一次版面即可，不必每幀量。
+  function applyShift() {
+    const d = drag;
+    const to = targetIndex();
+    if (to !== d.to) {
+      // FLIP：先量各欄位置 → 改變 DOM 順序 → 再量，用差值做補間
+      const before = {};
+      d.hs.forEach(function (th) {
+        const l = th.getAttribute('data-col');
+        before[l] = th.getBoundingClientRect().left;
+      });
+      if (moveColumnTo(d.label, to)) {
+        d.hs = ths();
+        d.cells = cellsOf(d.label);
+        d.th = findTh(d.label);
+        const afterLeft = {};
+        d.hs.forEach(function (th) {
+          afterLeft[th.getAttribute('data-col')] = th.getBoundingClientRect().left;
+        });
+        // 被推開的欄：從舊位置滑到新位置（被拖的那欄不給動畫）
+        d.hs.forEach(function (th) {
+          const l = th.getAttribute('data-col');
+          if (l === d.label) return;
+          const delta = before[l] - afterLeft[l];
+          if (Math.abs(delta) > 0.5) flipTo([th].concat(cellsOf(l)), delta);
+        });
+        d.slotLeft = afterLeft[d.label];
+      }
+      d.to = to;
+      clearMarks();
+      const mark = findTh(ths()[to] ? ths()[to].getAttribute('data-col') : '');
+      if (mark && to !== d.from) mark.classList.add('pl-drop-target');
+    }
+    followPointer();
+  }
+
+  // 拖曳中把游標移到容器邊緣時自動捲動，越靠近邊緣捲越快。
+  // 用 setInterval 而非 requestAnimationFrame：無頭環境不推進 rAF，
+  // 且容器位置在拖曳期間不會變動，讀一次版面即可。
   function autoScrollTick() {
     if (!drag) return;
     const box = drag.box;
@@ -1254,7 +1312,7 @@ function attachColDrag(outDiv, colOrder, onChange) {
     if (v) {
       const before = outDiv.scrollLeft;
       outDiv.scrollLeft += v;
-      if (outDiv.scrollLeft !== before) applyShift();
+      if (outDiv.scrollLeft !== before) followPointer();
     }
   }
 
@@ -1266,16 +1324,19 @@ function attachColDrag(outDiv, colOrder, onChange) {
     const hs = ths();
     const from = hs.indexOf(th);
     if (from < 0) return;
-    // 記下拖曳當下的實際位置與寬度，之後用位移量換算（不受捲動／transform 影響）
-    const orig = hs.map(function (x) {
-      const r = x.getBoundingClientRect();
-      return { left: r.left, w: r.width };
-    });
+    const r = th.getBoundingClientRect();
     drag = {
       th: th, from: from, to: from,
       label: th.getAttribute('data-col'),
       grabX: e.clientX, px: e.clientX,
-orig: orig, hs: hs, rows: rowsOf(),
+      grabOffset: e.clientX - r.left,
+      width: r.width,
+      orig: hs.map(function (x) {
+        const q = x.getBoundingClientRect();
+        return { left: q.left, w: q.width };
+      }),
+      hs: hs, cells: cellsOf(th.getAttribute('data-col')),
+      slotLeft: r.left,
       box: outDiv.getBoundingClientRect(),
       startScroll: outDiv.scrollLeft,
       active: false, timer: 0
@@ -1308,8 +1369,22 @@ orig: orig, hs: hs, rows: rowsOf(),
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onUp);
     if (d.timer) clearInterval(d.timer);
-    resetStyles();
-    if (!d.active || d.to === d.from) return;
+
+    if (d.active) {
+      // 收尾：把落點欄滑到定位，並移除所有殘留的位移／動畫
+      const th = findTh(d.label);
+      const els = [th].concat(cellsOf(d.label));
+      cancelAnims(els);
+      els.forEach(function (el) { el.style.transform = ''; });
+      table.querySelectorAll('th, td').forEach(function (el) {
+        cancelAnims([el]);
+      });
+      th.classList.remove('pl-dragging');
+      table.classList.remove('pl-dragging-table');
+      clearMarks();
+    }
+
+    if (!d.active) return;
     const all = ths().map(function (x) { return x.getAttribute('data-col'); });
     const arr = all.filter(function (l) { return l !== d.label; });
     arr.splice(d.to, 0, d.label);
