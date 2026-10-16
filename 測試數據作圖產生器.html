@@ -198,6 +198,16 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 .app-footer .author { color:var(--stat); font-weight:500; }
 .app-footer .ver { opacity:.75; margin-left:8px; }
 
+/* Plotline 讀值表格：欄標題可拖曳換位 + 差異欄標題可雙擊選配對 */
+.pl-table thead th[draggable="true"] { cursor:grab; user-select:none; }
+.pl-table thead th[draggable="true"]:hover { background:var(--btn-bg); border-radius:4px; }
+.pl-table thead th.pl-dragging { opacity:.4; cursor:grabbing; }
+.pl-table thead th.pl-drop-target { box-shadow:inset 3px 0 0 var(--accent); }
+.pl-table thead th[data-col$="(V)"], .pl-table thead th[data-col$="(mV)"] {
+  text-decoration:underline dotted; text-underline-offset:3px; cursor:pointer;
+}
+.pl-table thead th[data-col$="(V)"]:hover { background:color-mix(in srgb, var(--accent) 18%, transparent); }
+
 /* 已載入檔案清單（可逐一移除） */
 #fileChips { display:none; margin:10px 0 0; text-align:center; }
 #fileChips.on { display:block; }
@@ -541,7 +551,6 @@ function setupIVPlotline(chart, canvas) {
 
     // 每條曲線取 X 最接近的點（記錄所屬 dataset 索引，隱藏時可同步從表格移除）
     const cells = [{ label: xName, text: xVal.toFixed(4) }];
-    const vis = [];              // 依序記錄可見曲線，用於計算前-後性能差異
     let nearestY = NaN, nearestDs = -1;
     (chart.data.datasets || []).forEach(function(ds, dsIdx) {
       if (ds.hidden) return;
@@ -559,28 +568,20 @@ function setupIVPlotline(chart, canvas) {
           text: (+best.y).toFixed(4),
           ds: dsIdx
         });
-        vis.push({ ds: dsIdx, v: +best.y });
         if (isNaN(nearestY)) { nearestY = best.y; nearestDs = dsIdx; }
       }
     });
 
-    // 性能差異：第一條可見曲線 − 第二條可見曲線，置於 P (W) 之前
-    let diff = null;
-    if (vis.length >= 2) {
-      const dV = vis[0].v - vis[1].v;
-      diff = { ds: [vis[0].ds, vis[1].ds], v0: vis[0].v, v1: vis[1].v };
-      cells.push({ label: '前-後(V)', text: dV.toFixed(3), isDiff: true });
-      cells.push({ label: '前-後(mV)', text: (dV * 1000).toFixed(0), isDiff: true });
-    }
-
+    // 性能差異不寫死在此：改由 render 時依「目前配對」計算，
+    // 才能在點擊後重新挑選要相減的兩條曲線，並回頭套用到既有紀錄
     if (!isNaN(nearestY)) cells.push({ label: 'P (W)', text: (xVal * nearestY).toFixed(3) });
 
     ivPlotlineCount++;
     ivPlotlineRecords.push({
       n: ivPlotlineCount, sortKey: xVal, cells: cells,
-      pDs: nearestDs, pY: nearestY, xVal: xVal, diff: diff
+      pDs: nearestDs, pY: nearestY, xVal: xVal
     });
-    renderPlotlineTable(outDiv, ivPlotlineRecords, true, ivDatasetColors());   // IV：以電流由小到大
+    renderIVPlotline();
     ivPlotlineMarks.push({ x: xVal, n: ivPlotlineCount });
     try { chart.render(); } catch (err) {}
   });
@@ -634,12 +635,67 @@ function ivDatasetColors() {
   return arr;
 }
 
-// 圖例切換顯示／隱藏後，依目前的可見狀態重建 Plotline 表格欄位
-function refreshIVPlotlineTable() {
+// ===== IV 前-後差異：配對可由使用者挑選 =====
+// 使用者在「前-後(V)」欄標題上雙擊即可改選要相減的兩條曲線
+let ivDiffPairSel = null;    // { a: 曲線名稱, b: 曲線名稱 }；null = 自動取前兩條可見曲線
+let ivColOrder = [];         // 欄位顯示順序（標籤陣列），由拖曳標題改變
+
+// 目前可見的 IV 曲線名稱（排除右側功率軸）
+function ivCurveNames() {
+  const names = [];
+  const list = (ivChart && ivChart.data && ivChart.data.datasets) || [];
+  list.forEach(function (ds, i) {
+    if (ds.yAxisID === 'yPow') return;
+    if (!isDatasetVisible(ivChart, i)) return;
+    names.push(String(ds.label || '').replace(/ \(V\)$/, ''));
+  });
+  return names;
+}
+
+// 目前實際採用的配對：
+// 使用者明確選過配對時，只要其中一條被圖例隱藏就「不算」，
+// 讓差異欄消失——不能默默換成別的配對，否則顯示的數值會與使用者的選擇不符。
+// 未選過（自動模式）才退回前兩條可見曲線。
+function ivResolvedPair() {
+  const names = ivCurveNames();
+  if (names.length < 2) return null;
+  const s = ivDiffPairSel;
+  if (s) {
+    if (s.a === s.b) return null;
+    if (names.indexOf(s.a) < 0 || names.indexOf(s.b) < 0) return null;
+    return s;
+  }
+  return { a: names[0], b: names[1] };
+}
+
+// 欄標題顯示的名稱，例如「Mini Fifth-55 SC-850g Sixth Time 55 SC」
+function ivDiffLabel() {
+  const p = ivResolvedPair();
+  return p ? (p.a + '-' + p.b) : '';
+}
+
+// 依配對從該列的 cell 取值相減；任一曲線不存在（被圖例隱藏）就回傳 null
+function ivDiffValue(cells) {
+  const p = ivResolvedPair();
+  if (!p) return null;
+  let va = null, vb = null;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i].label === p.a) va = parseFloat(cells[i].text);
+    else if (cells[i].label === p.b) vb = parseFloat(cells[i].text);
+  }
+  if (va === null || vb === null || isNaN(va) || isNaN(vb)) return null;
+  return va - vb;
+}
+
+// 圖例切換顯示／隱藏、或配對改變後，重建 IV 讀值表格（含前-後差異欄）
+function renderIVPlotline() {
   const outDiv = document.getElementById('ivPlotlineOut');
-  if (!outDiv || !ivPlotlineRecords.length) return;
-  const filtered = ivPlotlineRecords.map(function(r) {
-    const cells = r.cells.filter(function(c) {
+  if (!outDiv) return;
+  if (!ivPlotlineRecords.length) return;
+  const pair = ivResolvedPair();
+  const dLabel = pair ? (pair.a + '-' + pair.b) : '';
+  const filtered = ivPlotlineRecords.map(function (r) {
+    const cells = r.cells.filter(function (c) {
       return c.ds === undefined || isDatasetVisible(ivChart, c.ds);
     });
     // P (W) 依據「點擊當下最前面那條可見曲線」計算，
@@ -649,16 +705,87 @@ function refreshIVPlotlineTable() {
         if (cells[i].label === 'P (W)') cells.splice(i, 1);
       }
     }
-    // 前-後 差異值來自前兩條可見曲線，任一被隱藏即無法計算 → 一併移除
-    if (r.diff && (!isDatasetVisible(ivChart, r.diff.ds[0]) ||
-                   !isDatasetVisible(ivChart, r.diff.ds[1]))) {
-      for (let i = cells.length - 1; i >= 0; i--) {
-        if (cells[i].isDiff) cells.splice(i, 1);
-      }
+    // 前-後：每次重繪都依「目前配對」重新計算，置於 P (W) 之前
+    const dV = ivDiffValue(cells);
+    if (dLabel && dV !== null) {
+      const ins = [
+        { label: dLabel + '(V)', text: dV.toFixed(3), isDiff: true },
+        { label: dLabel + '(mV)', text: (dV * 1000).toFixed(0), isDiff: true }
+      ];
+      let at = -1;
+      for (let i = 0; i < cells.length; i++) if (cells[i].label === 'P (W)') { at = i; break; }
+      if (at >= 0) cells.splice(at, 0, ins[0], ins[1]);
+      else cells.push(ins[0], ins[1]);
     }
     return { n: r.n, sortKey: r.sortKey, cells: cells };
   });
-  renderPlotlineTable(outDiv, filtered, true, ivDatasetColors());   // IV：以電流由小到大
+  renderPlotlineTable(outDiv, filtered, true, ivDatasetColors(), ivColOrder, function () {
+    // 拖曳換位後清掉 HTML 快取並重繪，順序才會真的套用
+    outDiv._plHtml = '';
+    renderIVPlotline();
+  });
+}
+
+// 舊的圖例連動入口改為轉呼叫 renderIVPlotline
+function refreshIVPlotlineTable() { renderIVPlotline(); }
+
+// 雙擊「…(V)」欄標題 → 選要被減的與要減去的曲線
+function askIVDiffPair() {
+  const names = ivCurveNames();
+  if (names.length < 2) { alert('至少要有兩條可見的 IV 曲線才能比較差異'); return; }
+  const cur = ivResolvedPair();
+  const opts = function (sel) {
+    return names.map(function (n) {
+      return '<option value="' + escHtml(n) + '"' + (n === sel ? ' selected' : '') + '>' + escHtml(n) + '</option>';
+    }).join('');
+  };
+  document.querySelectorAll('.diff-modal').forEach(function (el) { el.remove(); });
+  const ov = document.createElement('div');
+  ov.className = 'diff-modal';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--panel);color:var(--text);border:1px solid var(--accent);border-radius:8px;padding:16px 20px;min-width:320px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,0.35)';
+  box.innerHTML = '<h4 style="color:var(--accent);font-size:14px;margin-bottom:10px">📐 選擇要相減的兩條 IV 曲線</h4>'
+    + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">被減的曲線（ minuend ）</label>'
+    + '<select class="dpA" style="width:100%;margin-bottom:8px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">'
+    + opts(cur.a) + '</select>'
+    + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">減去的曲線（ subtrahend ）</label>'
+    + '<select class="dpB" style="width:100%;margin-bottom:10px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">'
+    + opts(cur.b) + '</select>'
+    + '<div class="dpPrev" style="font-size:11px;color:var(--dim);margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>'
+    + '<div style="text-align:right">'
+    + '<button class="dpOk" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:6px">套用</button>'
+    + '<button class="dpAuto" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--input-border);padding:4px 14px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:6px">自動</button>'
+    + '<button class="dpCancel" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--input-border);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:12px">取消</button>'
+    + '</div>';
+  ov.appendChild(box);
+  document.body.appendChild(ov);
+  const selA = box.querySelector('.dpA'), selB = box.querySelector('.dpB');
+  const prev = box.querySelector('.dpPrev');
+  function upd() {
+    if (selA.value === selB.value) {
+      prev.textContent = '⚠ 兩邊選了同一條曲線，差異會是 0';
+      prev.style.color = '#ff9f0a';
+    } else {
+      prev.textContent = '欄標題會變成：' + selA.value + '-' + selB.value + '(V)';
+      prev.style.color = 'var(--dim)';
+    }
+  }
+  selA.onchange = upd; selB.onchange = upd; upd();
+  ov.addEventListener('click', function (e) { if (e.target === ov) ov.remove(); });
+  box.querySelector('.dpCancel').onclick = function () { ov.remove(); };
+  box.querySelector('.dpAuto').onclick = function () {
+    ivDiffPairSel = null; ov.remove(); renderIVPlotline();
+  };
+  box.querySelector('.dpOk').onclick = function () {
+    ivDiffPairSel = { a: selA.value, b: selB.value };
+    ov.remove();
+    renderIVPlotline();
+  };
+  box.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); box.querySelector('.dpOk').click(); }
+    else if (e.key === 'Escape') { ov.remove(); }
+  });
 }
 
 function refreshLinePlotlineTable(chart) {
@@ -936,10 +1063,12 @@ if (c.label === '#ffffff') return { stroke: 'rgba(40,40,40,0.65)', label: '#3333
 }
 // Plotline 讀值表格：第一欄＝序號、第一列＝各欄標籤
 // records: [{ n, sortKey, cells: [{ label, text }] }]
-function renderPlotlineTable(outDiv, records, asc, dsColors) {
+function renderPlotlineTable(outDiv, records, asc, dsColors, colOrder, onColOrderChanged) {
   if (!outDiv) return;
   // asc 為 true 時由小到大排序（IV 曲線以電流排序）；未指定則由大到小
-  // dsColors：依資料集索引排列的線色陣列，讓標題依對應曲線著色
+  // dsColors：依資料集索引排列的線色陣列，標題依對應曲線著色
+  // colOrder：欄位顯示順序（標籤陣列，可由拖曳標題改變）；未給則用自然順序
+  // onColOrderChanged：拖曳完成後的通知，用來清快取並重繪
   const list = records.slice().sort(function(a, b) {
     return asc ? (a.sortKey - b.sortKey) : (b.sortKey - a.sortKey);
   });
@@ -953,16 +1082,24 @@ function renderPlotlineTable(outDiv, records, asc, dsColors) {
       }
     });
   });
-  let html = '<table class="pl-table"><thead><tr><th>序號</th>';
-  labels.forEach(function(l) {
+  // 依 colOrder 重排；order 裡沒有的欄位維持自然順序補在後面，
+  // 用標籤而非索引排序，圖例切換導致欄位增減時順序才不會錯位
+  const shown = orderLabels(labels, colOrder);
+  // 只有提供 colOrder 的表格（IV 讀值表）才啟用拖曳，避免折線圖出現無效的拖曳游標
+  const canDrag = Array.isArray(colOrder);
+  let html = '<table class="pl-table"><thead><tr><th class="pl-th-fixed">序號</th>';
+  shown.forEach(function(l) {
     const dsi = labelDs[l];
     const col = (dsi !== undefined && dsColors) ? dsColors[dsi] : '';
-    html += '<th' + (col ? ' style="color:' + escHtml(col) + '"' : '') + '>' + escHtml(l) + '</th>';
+    html += '<th' + (canDrag ? ' draggable="true"' : '')
+      + (col ? ' style="color:' + escHtml(col) + '"' : '')
+      + ' data-col="' + escHtml(l) + '"'
+      + (canDrag ? ' title="可拖曳調整欄位順序"' : '') + '>' + escHtml(l) + '</th>';
   });
   html += '</tr></thead><tbody>';
   list.forEach(function(r) {
     html += '<tr><td>' + String(r.n).padStart(2, '0') + '</td>';
-    labels.forEach(function(l) {
+    shown.forEach(function(l) {
       let cell = null;
       for (let i = 0; i < r.cells.length; i++) if (r.cells[i].label === l) { cell = r.cells[i]; break; }
       html += '<td>' + (cell ? escHtml(cell.text) : '') + '</td>';
@@ -974,8 +1111,94 @@ function renderPlotlineTable(outDiv, records, asc, dsColors) {
   if (outDiv._plHtml !== html) {
     outDiv._plHtml = html;
     outDiv.innerHTML = html;
+    attachColDrag(outDiv, colOrder, onColOrderChanged);
+    bindDiffHeader(outDiv);
   }
   outDiv.style.display = 'block';
+}
+
+// 「…(V)」欄標題可雙擊開啟配對選擇（只給 IV 讀值表用，
+// 折線圖的欄名也可能以 (V) 結尾，所以用 outDiv 身分把關）
+function bindDiffHeader(outDiv) {
+  if (outDiv.id !== 'ivPlotlineOut') return;
+  const table = outDiv.querySelector('table.pl-table');
+  if (!table || table._diffBound) return;
+  table._diffBound = true;
+  table.addEventListener('dblclick', function (e) {
+    const th = e.target.closest && e.target.closest('thead th');
+    if (!th) return;
+    const col = th.getAttribute('data-col');
+    if (!col || col.slice(-3) !== '(V)') return;
+    askIVDiffPair();
+  });
+}
+
+// 依指定的欄位順序重排；順序以「標籤」記錄，順序裡沒有的欄位維持自然順序補在後面
+function orderLabels(labels, order) {
+  if (!order || !order.length) return labels.slice();
+  const has = {};
+  order.forEach(function (l) { has[l] = true; });
+  const out = [];
+  order.forEach(function (l) { if (labels.indexOf(l) >= 0) out.push(l); });
+  labels.forEach(function (l) { if (!has[l]) out.push(l); });
+  return out;
+}
+
+// 欄標題拖曳換位置：把整欄（標題＋每一列的資料）一起搬，序號欄固定不動
+function attachColDrag(outDiv, colOrder, onChange) {
+  const table = outDiv.querySelector('table.pl-table');
+  if (!table || table._dragBound) return;
+  table._dragBound = true;
+  // 初次綁定時把當下的自然順序寫回去，之後才能直接改這個陣列
+  if (colOrder && !colOrder.length) {
+    table.querySelectorAll('thead th[draggable="true"]').forEach(function (th) {
+      colOrder.push(th.getAttribute('data-col'));
+    });
+  }
+  let fromLabel = null;
+  function clearMark() {
+    table.querySelectorAll('th.pl-drop-target').forEach(function (el) { el.classList.remove('pl-drop-target'); });
+  }
+  table.querySelectorAll('thead th[draggable="true"]').forEach(function (th) {
+    th.addEventListener('dragstart', function (e) {
+      fromLabel = th.getAttribute('data-col');
+      th.classList.add('pl-dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', fromLabel); } catch (err) {}
+      }
+    });
+    th.addEventListener('dragend', function () {
+      fromLabel = null;
+      th.classList.remove('pl-dragging');
+      clearMark();
+    });
+    th.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      if (th.classList.contains('pl-dragging')) return;
+      clearMark();
+      th.classList.add('pl-drop-target');
+    });
+    th.addEventListener('dragleave', function () {
+      th.classList.remove('pl-drop-target');
+    });
+    th.addEventListener('drop', function (e) {
+      e.preventDefault();
+      clearMark();
+      const toLabel = th.getAttribute('data-col');
+      if (!fromLabel || !toLabel || fromLabel === toLabel) return;
+      const all = orderLabels(Array.prototype.map.call(
+        table.querySelectorAll('thead th[draggable="true"]'), function (x) { return x.getAttribute('data-col'); }),
+        colOrder);
+      const arr = all.filter(function (l) { return l !== fromLabel; });
+      const at = arr.indexOf(toLabel);
+      if (at < 0) return;
+      arr.splice(at, 0, fromLabel);
+      if (colOrder) colOrder.splice(0, colOrder.length, ...arr);
+      if (onChange) onChange();
+    });
+  });
 }
 
 function setupPlotline(chart, canvas, labels, cols) {
