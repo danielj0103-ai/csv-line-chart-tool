@@ -205,10 +205,16 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
   cursor:grab; user-select:none; touch-action:none; position:relative;
 }
 .pl-table thead th[data-drag="1"]:hover { background:var(--btn-bg); border-radius:4px; }
-/* 被拖的欄浮在別人上面並帶陰影；它不參與 FLIP 動畫，transform 直接跟游標 */
+/* 被拖的欄浮在別人上面並帶陰影；它不參與動畫，transform 直接跟游標 */
 .pl-table thead th.pl-dragging {
   cursor:grabbing; z-index:5; border-radius:4px;
   box-shadow:0 10px 26px rgba(0,0,0,.28);
+}
+/* 讓位動畫（FLIP 由 attachColDrag() 觸發 transition）。
+   被拖的那欄不列入，否則會延遲跟隨游標。 */
+.pl-table.pl-dragging-table tbody td,
+.pl-table.pl-dragging-table thead th[data-drag="1"]:not(.pl-dragging) {
+  transition:transform 200ms cubic-bezier(.2,.8,.3,1);
 }
 .pl-table thead th.pl-drop-target { box-shadow:inset 3px 0 0 var(--accent); }
 .pl-table thead th[data-col$="(V)"], .pl-table thead th[data-col$="(mV)"] {
@@ -1173,8 +1179,6 @@ function attachColDrag(outDiv, colOrder, onChange) {
 
   const MOVE_THRESHOLD = 4;   // 超過這個位移才算拖曳，避免與點擊／雙擊衝突
   const EDGE_ZONE = 56;       // 自動捲動的邊緣觸發區
-  const FLIP_MS = 200;
-  const FLIP_EASE = 'cubic-bezier(.2,.8,.3,1)';
   let drag = null;
 
   function ths() {
@@ -1199,13 +1203,6 @@ function attachColDrag(outDiv, colOrder, onChange) {
       el.classList.remove('pl-drop-target');
     });
   }
-  function cancelAnims(els) {
-    els.forEach(function (el) {
-      if (!el._flip) return;
-      el._flip.cancel();
-      el._flip = null;
-    });
-  }
   // 把某欄從 from 位置搬到 to 位置（直接動 DOM，含表頭與每一列）
   function moveColumnTo(label, to) {
     const order = ths().map(function (th) { return th.getAttribute('data-col'); });
@@ -1225,15 +1222,20 @@ function attachColDrag(outDiv, colOrder, onChange) {
     });
     return true;
   }
-  // 把一組元素從位移 d 平滑回到 0（FLIP 的補間）
+// 把一組元素從位移 d 平滑回到 0（FLIP 的補間）。
+  // 用 CSS transition 而非 element.animate()：實測在表格儲存格上
+  // Web Animations API 的動畫不會被畫出來，而 transition 正常。
+  // 先關 transition 設定起始位移 → 強制重排 → 恢復 transition 並歸零，
+  // 瀏覽器就會從 d 平滑補間回 0。
   function flipTo(els, d) {
     els.forEach(function (el) {
-      cancelAnims([el]);
-      if (!el.animate) return;                    // 極舊瀏覽器就直接跳
-      el._flip = el.animate(
-        [{ transform: 'translateX(' + d + 'px)' }, { transform: 'translateX(0px)' }],
-        { duration: FLIP_MS, easing: FLIP_EASE }
-      );
+      el.style.transition = 'none';
+      el.style.transform = 'translateX(' + d.toFixed(2) + 'px)';
+    });
+    void table.offsetWidth;              // 強制重排，讓起始位移被認得
+    els.forEach(function (el) {
+      el.style.transition = '';
+      el.style.transform = '';
     });
   }
   // 被拖的欄：不參與動畫，直接貼齊游標
@@ -1402,17 +1404,16 @@ if (d.active) {
       // 被拖的欄：從目前貼游標的位置，平滑歸位到它的欄位插槽。
       // 不可直接清掉 transform，否則放開的瞬间會跳一下。
       const th = findTh(d.label);
+      const settle = th.getBoundingClientRect().left;
       [th].concat(cellsOf(d.label)).forEach(function (el) {
-        cancelAnims([el]);
-        const cur = el.style.transform;
         el.style.transform = '';
-        if (cur && el.animate) {
-          el._flip = el.animate(
-            [{ transform: cur }, { transform: 'translateX(0px)' }],
-            { duration: FLIP_MS, easing: FLIP_EASE }
-          );
-        }
       });
+      // 被拖的欄還停在游標位置，平滑歸位到它的欄位插槽
+      void table.offsetWidth;
+      if (Math.abs(settle - th.getBoundingClientRect().left) > 0.5) {
+        flipTo([th].concat(cellsOf(d.label)),
+               settle - th.getBoundingClientRect().left);
+      }
       th.classList.remove('pl-dragging');
       table.classList.remove('pl-dragging-table');
       clearMarks();
