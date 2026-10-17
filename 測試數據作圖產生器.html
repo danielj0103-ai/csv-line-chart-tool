@@ -178,8 +178,11 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 .chart-menu-item.danger { color:var(--danger); }
 .chart-menu-item.danger:hover { background:var(--danger); color:#fff; }
 
-/* 拖曳排序 */
-.chart-container { transition:transform .35s cubic-bezier(.25,.8,.25,1); }
+/* 拖曳排序：推移動畫交給 Sortable 的 animation(200) 獨自負責。
+   原本這裡另有 .chart-container { transition:transform .35s }，
+   與 Sortable 的 animation 同時驅動同一個 transform 而互相干擾，
+   造成換位時拖滯、放開時跳動，故移除。
+   （全檔沒有任何 @keyframes／進場動畫依賴這條 transition） */
 .chart-container.dragging { opacity:.5; }
 .chart-container.drop-target { outline:2px solid var(--accent); outline-offset:-4px; border-radius:18px; }
 .sortable-ghost { opacity:.35 !important; background:var(--panel) !important; border-radius:18px; }
