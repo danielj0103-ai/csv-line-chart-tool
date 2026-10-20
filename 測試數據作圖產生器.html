@@ -10,7 +10,7 @@
   ============================================================
   CSV 折線圖產生器 (CSV Line Chart Generator)
   作者 Author : 江國成 / Daniel
-   版本 Version: 3.0
+   版本 Version: 3.1
   說明        : 純前端單檔 HTML，離線可用（Chart.js 走 CDN）
   授權 License: © 2026 江國成 (Daniel). All rights reserved.
 
@@ -239,7 +239,15 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 }
 #fileChips .fc-chip .fc-name {
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  cursor:pointer;
 }
+#fileChips .fc-chip .fc-name:hover { color:var(--accent); }
+#fileChips .fc-edit {
+  border:none; background:transparent; color:var(--dim);
+  cursor:pointer; font-size:13px; line-height:1; padding:0 3px;
+  border-radius:50%;
+}
+#fileChips .fc-edit:hover { background:var(--btn-hover); color:var(--btn-hover-fg); }
 #fileChips .fc-chip .fc-kb { color:var(--dim); font-size:11px; }
 #fileChips .fc-x {
   border:none; background:transparent; color:var(--dim);
@@ -302,7 +310,7 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 <button id="themeToggle" title="切換深色／淺色版面">☀️ 淺色版面</button>
 </div>
 <footer class="app-footer">
-  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v3.0</span>
+  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v3.1</span>
 
   <div class="dl-band">
     <div class="dl-title">下載離線使用：主程式與說明書，建議<b>三個都下載</b>放到同一資料夾</div>
@@ -950,12 +958,13 @@ function renderFileChips() {
     fileChipsDiv.innerHTML = '';
     return;
   }
-  let html = '<div class="fc-label">已載入 ' + loadedFiles.length + ' 個檔案（可再按上方按鈕繼續加入，最多 '
+  let html = '<div class="fc-label">已載入 ' + loadedFiles.length + ' 個檔案（點檔名可重新選擇要畫的欄位；可再按上方按鈕繼續加入，最多 '
     + MULTI_MAX + ' 個）</div><div class="fc-list">';
   loadedFiles.forEach(function (f, i) {
     html += '<span class="fc-chip" title="' + escHtml(f.name) + '">'
-      + '<span class="fc-name">' + escHtml(f.name) + '</span>'
+      + '<span class="fc-name" data-i="' + i + '" role="button" title="點擊重新選擇要顯示的欄位">' + escHtml(f.name) + '</span>'
       + '<span class="fc-kb">' + (f.size / 1024).toFixed(0) + ' KB</span>'
+      + '<button class="fc-edit" data-i="' + i + '" title="重新選擇要顯示的欄位" aria-label="重新選擇欄位">⚙</button>'
       + '<button class="fc-x" data-i="' + i + '" title="移除這個檔案" aria-label="移除">✕</button>'
       + '</span>';
   });
@@ -965,6 +974,11 @@ function renderFileChips() {
   html += '</div>';
   fileChipsDiv.innerHTML = html;
   fileChipsDiv.className = 'on';
+  fileChipsDiv.querySelectorAll('.fc-name, .fc-edit').forEach(function (b) {
+    b.addEventListener('click', function () {
+      reopenColumns(parseInt(this.getAttribute('data-i'), 10));
+    });
+  });
   fileChipsDiv.querySelectorAll('.fc-x').forEach(function (b) {
     b.addEventListener('click', function () {
       const i = parseInt(this.getAttribute('data-i'), 10);
@@ -982,6 +996,18 @@ function renderFileChips() {
     pickedColNames = new Set();
     renderLoadedFiles();
   });
+}
+
+// 點已載入檔案的檔名／⚙：重開欄位勾選面板，可新增或刪除要畫的欄位
+function reopenColumns(i) {
+  if (!loadedFiles.length) return;
+  // 2 檔以上走多檔聯集面板（先保留現有圖，按確認才重畫）
+  if (loadedFiles.length >= 2) {
+    renderMultiPanel({ keepCharts: true });
+    return;
+  }
+  if (!currentData) return;
+  showColumnPanel(currentData, loadedFiles[i] ? loadedFiles[i].name : '', lastSingleSelected);
 }
 
 // 把新選的檔案併入既有清單
@@ -1953,9 +1979,10 @@ function loadMultiFiles(fileList) {
     });
 }
 
-// 多檔欄位選擇面板
-function renderMultiPanel() {
-  clearMultiChartsKeepFiles();   // 只清掉舊圖，保留已解析的 multiFiles
+// 多檔欄位選擇面板。opts.keepCharts = true 表示「點檔名重開」，先不清掉現有圖
+function renderMultiPanel(opts) {
+  const keep = !!(opts && opts.keepCharts);
+  if (!keep) clearMultiChartsKeepFiles();   // 只清掉舊圖，保留已解析的 multiFiles
   const cols = multiColumnUnion(multiFiles);
   columnConfigDiv.style.display = 'block';
   let html = '<h4>📊 多檔疊圖：選擇要比較的欄位（共 ' + multiFiles.length + ' 個檔案）</h4>';
@@ -1965,6 +1992,7 @@ function renderMultiPanel() {
   html += '<div><label style="color:var(--accent);font-size:13px;cursor:pointer"><input type="checkbox" id="multiSelectAll" checked> 全選 / 取消全選</label></div>';
   html += '<div style="margin-top:10px">'
     + '<button id="multiConfirm" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:6px 24px;border-radius:4px;cursor:pointer;font-size:13px;margin-right:8px">✓ 確認疊圖</button>'
+    + '<button id="multiCancel" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:6px 20px;border-radius:4px;cursor:pointer;font-size:13px;margin-right:8px">取消</button>'
     + '<button id="multiClear" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:6px 20px;border-radius:4px;cursor:pointer;font-size:13px">🗑️ 清除全部</button>'
     + '</div>';
   columnConfigDiv.innerHTML = html;
@@ -2007,7 +2035,12 @@ function renderMultiPanel() {
     // 記住這次勾了哪些欄位，加入其他檔案後重開面板時會預設勾回
     pickedColNames = new Set(picked.map(function (c) { return c.name.trim().toLowerCase(); }));
     columnConfigDiv.style.display = 'none';
+    columnConfigDiv.innerHTML = '';
     buildMultiChart(picked.map(function (p) { return p.col; }));
+  });
+  document.getElementById('multiCancel').addEventListener('click', function () {
+    columnConfigDiv.style.display = 'none';
+    columnConfigDiv.innerHTML = '';
   });
   document.getElementById('multiClear').addEventListener('click', clearMultiCharts);
 }
@@ -2988,20 +3021,28 @@ function parseAndBuild(csvText, filename) {
     // 第一階段：只掃標題與前 30 列，不解析整檔
     const scan = scanTable(csvText);
     if (!scan) { loading.style.display = "none"; return; }
-    currentData = scan;
     lastSingleSelected = null;
-    const numericCols = scan.numericCols, headers = scan.headers;
+    showColumnPanel(scan, filename, null);
+  } catch(e) {
+    loading.style.display = 'none';
+  }
+}
 
-    loading.style.display = "none";
+// 單檔欄位勾選面板。preCols 有值時（點檔名重開）以它預設勾選，否則沿用 pickedColNames
+function showColumnPanel(scan, filename, preCols) {
+    currentData = scan;
+    const numericCols = scan.numericCols, headers = scan.headers;
 
     loading.style.display = 'none';
 
     // Show column selection
     columnConfigDiv.style.display = 'block';
      columnConfigDiv.innerHTML = '<h4>📊 選擇要顯示的 Y 軸資料</h4>'
+      + '<div style="font-size:12px;color:var(--stat);margin-bottom:8px">檔案：' + escHtml(filename || '') + '</div>'
       + '<div id="colCheckboxes" style="columns:180px;column-gap:24px;margin:10px 0"></div>'
       + '<div><label style="color:var(--accent);font-size:13px;cursor:pointer"><input type="checkbox" id="selectAllCols" checked> 全選 / 取消全選</label></div>'
-      + '<div style="margin-top:10px"><button id="confirmCols" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:6px 24px;border-radius:4px;cursor:pointer;font-size:13px">✓ 確認選擇</button></div>';
+      + '<div style="margin-top:10px"><button id="confirmCols" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:6px 24px;border-radius:4px;cursor:pointer;font-size:13px;margin-right:8px">✓ 確認選擇</button>'
+      + '<button id="cancelCols" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:6px 20px;border-radius:4px;cursor:pointer;font-size:13px">取消</button></div>';
 
     const cbDiv = document.getElementById('colCheckboxes');
     const checkboxes = [];
@@ -3020,8 +3061,9 @@ function parseAndBuild(csvText, filename) {
       const col = entry.col;
       const id = 'colcb_' + newIdx;
       const name = headers[col];
-      // 記住上次的勾選；從未勾過時維持原本的「全選」預設
-      const on = pickedColNames.size ? pickedColNames.has(String(name).trim().toLowerCase()) : true;
+      // 重開面板：勾回目前畫的欄位；否則記住上次的勾選；從未勾過時維持原本的「全選」預設
+      const on = preCols ? preCols.indexOf(col) >= 0
+        : (pickedColNames.size ? pickedColNames.has(String(name).trim().toLowerCase()) : true);
       const lbl = document.createElement('label');
       lbl.style.cssText = 'display:flex;align-items:center;gap:6px;color:var(--tick);font-size:13px;cursor:pointer;padding:2px 0;break-inside:avoid';
       lbl.innerHTML = '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="margin:0"> <span>' + name + '</span>';
@@ -3034,6 +3076,11 @@ function parseAndBuild(csvText, filename) {
       checkboxes.forEach(cb => document.getElementById(cb.id).checked = checked);
     });
 
+    document.getElementById('cancelCols').addEventListener('click', function() {
+      columnConfigDiv.style.display = 'none';
+      columnConfigDiv.innerHTML = '';
+    });
+
     document.getElementById('confirmCols').addEventListener('click', function() {
       const selected = checkboxes.filter(cb => document.getElementById(cb.id).checked).map(cb => cb.col);
       if (selected.length === 0) return;
@@ -3042,10 +3089,12 @@ function parseAndBuild(csvText, filename) {
         return document.getElementById(cb.id).checked;
       }).map(function (cb) { return String(cb.name).trim().toLowerCase(); }));
       columnConfigDiv.style.display = 'none';
+      columnConfigDiv.innerHTML = '';
       // 第二階段：這時才逐列解析，且只解析勾選的欄位
       lastSingleSelected = selected;
       loading.style.display = 'block';
       setTimeout(function () {
+        clearSingleCharts();   // 重開面板改欄位時，先收掉舊圖再加新圖
         const mat = materializeTable(scan, selected);
         loading.style.display = 'none';
         if (!mat) { alert('檔案沒有足夠的資料列可繪圖（可能時間欄無法解析）'); return; }
@@ -3055,10 +3104,6 @@ function parseAndBuild(csvText, filename) {
         buildCharts(d.times, d.series, d.labels, selected, scan.headers, scan.timeCol);
       }, 0);
     });
-
-  } catch(e) {
-    loading.style.display = 'none';
-  }
 }
 
 function resetChart(id) {
