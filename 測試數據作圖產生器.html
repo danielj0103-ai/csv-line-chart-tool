@@ -10,7 +10,7 @@
   ============================================================
   CSV 折線圖產生器 (CSV Line Chart Generator)
   作者 Author : 江國成 / Daniel
-   版本 Version: 2.8
+   版本 Version: 3.0
   說明        : 純前端單檔 HTML，離線可用（Chart.js 走 CDN）
   授權 License: © 2026 江國成 (Daniel). All rights reserved.
 
@@ -129,13 +129,14 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
   backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px);
   box-shadow:var(--shadow);
 }
-#plotlineToggle, #themeToggle {
+#plotlineToggle, #crosshairToggle, #sampleToggle, #themeToggle {
   background:transparent; color:var(--btn-fg); border:none;
   padding:6px 15px; border-radius:980px; cursor:pointer; font-size:12px; font-weight:500;
   transition:background .18s, color .18s;
 }
-#plotlineToggle:hover, #themeToggle:hover { background:var(--btn-hover); color:var(--btn-hover-fg); }
-#plotlineToggle.on { background:var(--accent); color:#fff; }
+#plotlineToggle:hover, #crosshairToggle:hover, #sampleToggle:hover, #themeToggle:hover { background:var(--btn-hover); color:var(--btn-hover-fg); }
+#plotlineToggle.on, #crosshairToggle.on, #sampleToggle.on { background:var(--accent); color:#fff; }
+#sampleMenu button:hover { background:var(--btn-hover) !important; color:var(--btn-hover-fg) !important; }
 
 /* Plotline 讀值 */
 .plotline-out {
@@ -296,10 +297,12 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 <div id="ivCharts"></div>
 <div id="fixedTools">
 <button id="plotlineToggle" title="開啟後點擊圖表，於各圖下方讀取該位置數值">📏 Plotline</button>
+<button id="crosshairToggle" class="on" title="關閉可減少大檔案時的 redraw 負擔">☑ 十字準線</button>
+<button id="sampleToggle" title="把資料依時間區間取平均，減少畫面上的點數（大檔案可明顯加快）">⏱ 取樣：1 秒</button>
 <button id="themeToggle" title="切換深色／淺色版面">☀️ 淺色版面</button>
 </div>
 <footer class="app-footer">
-  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v2.8</span>
+  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v3.0</span>
 
   <div class="dl-band">
     <div class="dl-title">下載離線使用：主程式與說明書，建議<b>三個都下載</b>放到同一資料夾</div>
@@ -532,6 +535,7 @@ function setupIVPlotline(chart, canvas) {
   });
   canvas.addEventListener('mousemove', function(e) {
     if (!plotlineEnabled) return;
+    if (!crosshairEnabled) return;
     if (e.buttons & 1) return;
     const ca = chart.chartArea;
     if (!ca) return;
@@ -821,7 +825,11 @@ function refreshLinePlotlineTable(chart) {
 }
 
 function setupCrosshair(chart, canvas, labels) {
+  if (!crosshairEnabled) return;              // 關閉時不綁 mousemove
+  if (canvas._crosshairBound) return;         // 已綁過就不重複綁
+  canvas._crosshairBound = true;
   canvas.addEventListener('mousemove', function(e) {
+    if (!crosshairEnabled) return;            // 執行期再擋一次，關閉後零重繪
     if (e.buttons & 1) return;
     const ca = chart.chartArea;
     if (!ca) return;
@@ -857,12 +865,29 @@ const fileName = document.getElementById('fileName');
 const fileChipsDiv = document.getElementById('fileChips');
 const columnConfigDiv = document.getElementById('columnConfig');
 const plotlineToggle = document.getElementById('plotlineToggle');
+const crosshairToggle = document.getElementById('crosshairToggle');
+const sampleToggle = document.getElementById('sampleToggle');
+let crosshairEnabled = true;
+
+// ===== 取樣（降採樣）=====
+// 大檔案（例：40 萬點）畫在圖上會很慢，這裡提供「每 N 秒取區間平均」把點數降下來。
+// sampleSec = 1 等同原始資料（1 Hz 資料不取樣）。
+let sampleSec = 1;
+const SAMPLE_OPTIONS = [
+  { sec: 1,    label: '1 秒（原始）' },
+  { sec: 60,   label: '1 分' },
+  { sec: 600,  label: '10 分' },
+  { sec: 1800, label: '30 分' },
+  { sec: 3600, label: '1 小時' },
+];
+let lastSingleSelected = null;   // 單檔流程最後一次勾選的欄位索引
+let lastMultiSelected = null;    // 多檔流程最後一次勾選的欄位
 
 // ===== 檔案累積載入 =====
 // 需求：按「選擇檔案」後新選的檔案是「加到」既有清單，而不是取代。
 // loadedFiles 保存所有已加入的 File；1 個走單檔流程，2 個以上走多檔疊圖。
 let loadedFiles = [];       // File[]
-const parsedCache = new Map();   // 'name|size|lastModified' → analyzeTable 結果（避免重複解析）
+const parsedCache = new Map();   // 'name|size|lastModified' → scanTable 結果（避免重複解析）
 let pickedColNames = new Set();  // 上次勾選的欄位名（小寫），重新開面板時預設勾回
 
 function fileKey(f) { return f.name + '|' + f.size + '|' + f.lastModified; }
@@ -906,6 +931,8 @@ function renderLoadedFiles() {
 function resetChartsToEmpty() {
   clearMultiChartsKeepFiles();
   chartsDiv.innerHTML = '';
+  lastSingleSelected = null;
+  lastMultiSelected = null;
   columnConfigDiv.style.display = 'none';
   columnConfigDiv.innerHTML = '';
   allCharts.forEach(function (ch) { try { ch.destroy(); } catch (e) {} });
@@ -990,6 +1017,112 @@ function syncZoomEnabledByPlotline() {
   });
 }
 
+crosshairToggle.addEventListener('click', function() {
+  crosshairEnabled = !crosshairEnabled;
+  this.classList.toggle('on', crosshairEnabled);
+  this.textContent = crosshairEnabled ? '☑ 十字準線' : '☐ 十字準線';
+  // 關閉時把現有十字準線清除，避免殘留
+  if (!crosshairEnabled && crosshairState.x !== -1) {
+    crosshairState.x = -1;
+    redrawAllCharts();
+  }
+  // 重新套用 setupCrosshair（只在開啟時綁定 mousemove）
+  if (crosshairEnabled) {
+    allCharts.forEach(function(ch) {
+      try { setupCrosshair(ch, ch.canvas, ch._labels || []); } catch(e) {}
+    });
+  }
+});
+
+function sampleOptionLabel(sec) {
+  const o = SAMPLE_OPTIONS.filter(function (x) { return x.sec === sec; })[0];
+  return o ? o.label.replace('（原始）', '') : sec + ' 秒';
+}
+
+// 更新按鈕文字與提示（提示同時反映原始點數與取樣後點數）
+function updateSampleHint(rawLen, drawnLen) {
+  sampleToggle.textContent = '⏱ 取樣：' + sampleOptionLabel(sampleSec);
+  sampleToggle.classList.toggle('on', sampleSec > 1);
+  let s = '原始 ' + rawLen.toLocaleString() + ' 點 → 畫面 ' + drawnLen.toLocaleString()
+        + ' 點（每 ' + sampleOptionLabel(sampleSec) + ' 取平均）';
+  if (sampleSec === 1 && rawLen > 50000) s += '；點數很多，建議改用 1 分以上取樣';
+  sampleToggle.title = s;
+}
+
+function closeSampleMenu() {
+  const m = document.getElementById('sampleMenu');
+  if (m) m.remove();
+}
+
+function openSampleMenu() {
+  if (document.getElementById('sampleMenu')) { closeSampleMenu(); return; }
+  const m = document.createElement('div');
+  m.id = 'sampleMenu';
+  m.style.cssText = 'position:absolute;top:calc(100% + 6px);left:0;background:var(--panel);'
+    + 'border:1px solid var(--hairline);border-radius:12px;padding:5px;box-shadow:var(--shadow);'
+    + 'backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);'
+    + 'min-width:158px;z-index:1001';
+  m.innerHTML = '<div style="color:var(--dim);font-size:11px;padding:4px 10px 6px">取樣間隔（每桶取平均）</div>'
+    + SAMPLE_OPTIONS.map(function (o) {
+        const on = (o.sec === sampleSec);
+        return '<button class="sample-item" data-sec="' + o.sec + '" style="display:block;width:100%;'
+          + 'text-align:left;border:none;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:12px;'
+          + 'background:' + (on ? 'var(--accent)' : 'transparent') + ';color:' + (on ? '#fff' : 'var(--btn-fg)') + '">'
+          + o.label + '</button>';
+      }).join('');
+  document.getElementById('fixedTools').appendChild(m);
+  m.querySelectorAll('.sample-item').forEach(function (b) {
+    b.addEventListener('click', function () {
+      applySample(parseInt(this.getAttribute('data-sec'), 10));
+      closeSampleMenu();
+    });
+  });
+  // 點到選單外就關閉（下一輪事件迴圈才註冊，避免這次點擊立刻把自己關掉）
+  setTimeout(function () {
+    document.addEventListener('click', function onDoc(e) {
+      if (!document.getElementById('sampleMenu')) { document.removeEventListener('click', onDoc); return; }
+      if (!(e.target.closest && e.target.closest('#sampleMenu'))) {
+        closeSampleMenu();
+        document.removeEventListener('click', onDoc);
+      }
+    });
+  }, 0);
+}
+
+// 套用取樣間隔並用同一組勾選重新繪圖
+function applySample(sec) {
+  if (sec === sampleSec) return;
+  sampleSec = sec;
+  sampleToggle.textContent = '⏱ 取樣：' + sampleOptionLabel(sampleSec);
+  sampleToggle.classList.toggle('on', sampleSec > 1);
+  rerenderWithSampling();
+}
+
+// 依目前的取樣設定重新繪製（單檔／多檔各自處理）
+function rerenderWithSampling() {
+  if (multiFiles && multiFiles.length >= 2 && lastMultiSelected) {
+    buildMultiChart(lastMultiSelected);
+    return;
+  }
+  if (currentData && lastSingleSelected) {
+    const scan = currentData, selected = lastSingleSelected;
+    loading.style.display = 'block';
+    setTimeout(function () {
+      const mat = materializeTable(scan, selected);
+      if (!mat) { loading.style.display = 'none'; return; }
+        const d = downsampleMat(mat, sampleSec);
+        updateSampleHint(mat.times.length, d.times.length);
+        clearSingleCharts();
+      buildCharts(d.times, d.series, d.labels, selected, scan.headers, scan.timeCol);
+      loading.style.display = 'none';
+    }, 0);
+  }
+}
+
+sampleToggle.addEventListener('click', function (e) {
+  e.stopPropagation();
+  openSampleMenu();
+});
 plotlineToggle.addEventListener('click', function() {
   plotlineEnabled = !plotlineEnabled;
   this.classList.toggle('on', plotlineEnabled);
@@ -1538,7 +1671,7 @@ function fmtTime(d) {
 
 function fmtTimeShort(d) {
   const pad = n => String(n).padStart(2, '0');
-  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  return pad(d.getMonth()+1) + '/' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
 }
 
 // 依數列名稱尾端單位分組（不分大小寫），如 kPa / NLPM / 度
@@ -1802,7 +1935,7 @@ function loadMultiFiles(fileList) {
     }
     return readFileText(f).then(function (t) {
       if (!t) return { key: k, name: f.name, cached: null };
-      const a = analyzeTable(t);
+      const a = scanTable(t);
       if (a) { a.name = f.name.replace(/\.[^.]+$/, ''); parsedCache.set(k, a); }
       return { key: k, name: f.name, cached: a };
     });
@@ -1881,6 +2014,7 @@ function renderMultiPanel() {
 
 function buildMultiChart(selectedCols) {
   clearMultiChartsKeepFiles();
+  lastMultiSelected = selectedCols;
   const host = document.getElementById('multiCharts');
   const wrap = document.createElement('div');
   wrap.className = 'chart-container';
@@ -1892,17 +2026,35 @@ function buildMultiChart(selectedCols) {
   host.appendChild(wrap);
   const canvas = wrap.querySelector('#multiCanvas');
 
+  // 第二階段：每個檔案只解析本次要用到的欄位（大檔案才不會整檔轉成數字）
+  const mats = new Map();
+  multiFiles.forEach(function (f) {
+    const need = [];
+    selectedCols.forEach(function (col) {
+      col.refs.forEach(function (ref) {
+        if (ref.file === f && need.indexOf(ref.col) < 0) need.push(ref.col);
+      });
+    });
+    mats.set(f, downsampleMat(materializeTable(f, need) || { times: [], labels: [], series: {} }, sampleSec));
+  });
+  const m0 = mats.get(multiFiles[0]);
+  updateSampleHint(m0.rawCount || m0.times.length, m0.times.length);
+  sampleToggle.title = '多檔疊圖（' + multiFiles.length + ' 檔）：' + sampleToggle.title;
+
   // X 軸以第一個檔案的標籤為準；長度取各檔最大值，避免資料被截斷
-  const labels0 = multiFiles[0].labels;
+  const labels0 = mats.get(multiFiles[0]).labels || [];
   let maxLen = labels0.length;
-  multiFiles.forEach(function (f) { if (f.labels.length > maxLen) maxLen = f.labels.length; });
+  multiFiles.forEach(function (f) {
+    const m = mats.get(f);
+    if (m.labels.length > maxLen) maxLen = m.labels.length;
+  });
   const labels = labels0.slice();
   for (let i = labels0.length; i < maxLen; i++) labels.push('#' + i);
   const datasets = [];
   let colorIdx = 0;
   selectedCols.forEach(function (col) {
     col.refs.forEach(function (ref) {
-      const data = ref.file.series[ref.col] || [];
+      const data = (mats.get(ref.file).series[ref.col]) || [];
       const n = Math.min(data.length, labels.length);
       const arr = new Array(labels.length).fill(null);
       for (let i = 0; i < n; i++) arr[i] = data[i];
@@ -1962,8 +2114,9 @@ function buildMultiChart(selectedCols) {
   });
   setupCrosshair(multiChart, canvas, labels);
   // 雙擊 X／Y 軸可手動設定範圍與間隔（時間軸以第一個檔案的時間序列為準）
-  setupAxisEdit(multiChart, canvas, labels, multiFiles[0].times, multiFiles[0].timeCol);
+  setupAxisEdit(multiChart, canvas, labels, (mats.get(multiFiles[0]).times || []), multiFiles[0].timeCol);
   allCharts.push(multiChart);
+  multiChart._labels = labels;
 
   wrap.querySelector('#multiReset').addEventListener('click', function () {
     if (!multiChart) return;
@@ -2566,15 +2719,88 @@ fileInput.addEventListener('change', function(e) {
 });
 
 // 解析資料表 → { headers, numericCols, times, series, labels, timeCol, xIsTime }
-function analyzeTable(csvText) {
-  try {
-    // 先切除前導檔頭（.fcd 等），分隔符也要依「切除後」的內容判斷
-    const stripped = stripPreamble(csvText);
-    const lines = stripped.trim().split('\n');
-    if (lines.length < 2) { loading.style.display = 'none'; return; }
-    const delim = detectDelim(stripped);
+// ===== 兩階段解析（v3.0）=====
+// 第一階段 scanTable()：只讀標題與前 30 列判斷欄位型別，不解析整檔。
+// 第二階段 materializeTable()：使用者按下「確認選擇」後，才逐列解析「選中的欄位」。
+// 大檔案（例：40 萬列 × 47 欄）可省下數百 MB 的中介字串矩陣與未選欄位的資料。
+const SCAN_HEAD_LINES = 30;   // 型別偵測取樣列數（原程式只看前 10 列）
 
-    const rawHeaders = parseCSVLine(lines[0], delim);
+// 從 offset 起取前 n 列（不切整檔，避免 40 萬行字串）
+function headLines(text, offset, n) {
+  const out = [];
+  let pos = offset;
+  while (out.length < n && pos <= text.length) {
+    let nl = text.indexOf('\n', pos);
+    if (nl < 0) nl = text.length;
+    let line = text.slice(pos, nl);
+    if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
+    out.push(line);
+    if (nl >= text.length) break;
+    pos = nl + 1;
+  }
+  return out;
+}
+
+// 找真正標題列的位移：跳過 .fcd 前導檔頭與 End Comments
+function findHeaderOffset(text) {
+  const secRe = /(^|[\t,;]|\s)\s*Time\s*\(Sec\)/i;
+  const endRe = /^\s*End\s+Comments\s*$/i;
+  let firstContent = -1;
+  let pos = 0, seen = 0;
+  const limit = Math.min(text.length, 200000);   // 檔頭不會太長
+  while (pos < text.length && seen < 400 && pos < limit) {
+    let nl = text.indexOf('\n', pos);
+    if (nl < 0) nl = text.length;
+    let line = text.slice(pos, nl);
+    if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
+    const t = line.trim();
+    if (t && !endRe.test(t)) {
+      if (secRe.test(t)) return pos;
+      if (firstContent < 0) firstContent = pos;
+    }
+    if (nl >= text.length) break;
+    pos = nl + 1; seen++;
+  }
+  return firstContent >= 0 ? firstContent : 0;
+}
+
+function cleanCell(s) { return s.replace(/^['"]|['"]$/g, '').trim(); }
+
+// 只取出需要的欄位（單字元分隔符的快速路徑，不建立整列字串）
+function extractWantedRange(text, from, to, delimCode, wanted) {
+  const vals = {};
+  let idx = 0, start = from, inQuote = false;
+  for (let i = from; i < to; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 34) { inQuote = !inQuote; }
+    else if (ch === delimCode && !inQuote) {
+      if (wanted.has(idx)) vals[idx] = cleanCell(text.slice(start, i));
+      idx++; start = i + 1;
+    }
+  }
+  if (wanted.has(idx)) vals[idx] = cleanCell(text.slice(start, to));
+  return { vals: vals, count: idx + 1 };
+}
+
+// 多字元分隔符（連續空白）沿用原本的 parseCSVLine
+function extractWantedSlow(line, delim, wanted) {
+  const cells = parseCSVLine(line, delim);
+  const vals = {};
+  wanted.forEach(function (slot, idx) {
+    if (idx < cells.length) vals[idx] = cleanCell(cells[idx]);
+  });
+  return { vals: vals, count: cells.length };
+}
+
+function scanTable(csvText) {
+  try {
+    const text = String(csvText);
+    const start = findHeaderOffset(text);
+    const head = headLines(text, start, SCAN_HEAD_LINES + 1);
+    if (head.length < 2) { loading.style.display = 'none'; return null; }
+    const delim = detectDelim(head[0]);
+
+    const rawHeaders = parseCSVLine(head[0], delim);
     const headers = rawHeaders.map(h => {
       let s = h.replace(/^['"]|['"]$/g, '').trim().replace(/^\uFEFF/, '');
       if (s.includes('ime (Sec)')) s = s.replace(/^.*ime/, 'Time');
@@ -2582,16 +2808,14 @@ function analyzeTable(csvText) {
       return s || h.trim();
     });
 
-    const rows = [];
-    for (let i = 1; i < lines.length; i++) {
-      const cols = parseCSVLine(lines[i], delim);
+    // 只取前 20 列當型別偵測樣本（不建整檔矩陣）
+    const sample = [];
+    for (let i = 1; i < head.length && sample.length < 20; i++) {
+      const cols = parseCSVLine(head[i], delim);
       if (cols.length < 2) continue;
-      rows.push(cols.map(c => {
-        c = c.replace(/^['"]|['"]$/g, '').trim();
-        return c;
-      }));
+      sample.push(cols.map(c => c.replace(/^['"]|['"]$/g, '').trim()));
     }
-    if (rows.length < 2) { loading.style.display = 'none'; return; }
+    if (sample.length < 2) { loading.style.display = 'none'; return null; }
 
     let timeCol = -1;
     const timeKeywords = ['time', 'date', 'datetime', 'timestamp', '時間', '日期', '日付'];
@@ -2599,16 +2823,16 @@ function analyzeTable(csvText) {
       const hl = headers[c].toLowerCase();
       if (timeKeywords.some(kw => hl.includes(kw))) {
         let parsed = 0;
-        for (let r = 0; r < Math.min(5, rows.length); r++) {
-          if (parseTime(rows[r][c])) parsed++;
+        for (let r = 0; r < Math.min(5, sample.length); r++) {
+          if (parseTime(sample[r][c])) parsed++;
         }
         if (parsed >= 3) { timeCol = c; break; }
       }
     }
     if (timeCol < 0) {
       let parsed = 0;
-      for (let r = 0; r < Math.min(5, rows.length); r++) {
-        if (parseTime(rows[r][0])) parsed++;
+      for (let r = 0; r < Math.min(5, sample.length); r++) {
+        if (parseTime(sample[r][0])) parsed++;
       }
       if (parsed >= 3) timeCol = 0;
     }
@@ -2617,8 +2841,8 @@ function analyzeTable(csvText) {
     for (let c = 0; c < headers.length; c++) {
       if (c === timeCol) continue;
       let numCount = 0;
-      for (let r = 0; r < Math.min(10, rows.length); r++) {
-        if (isNumeric(rows[r][c])) numCount++;
+      for (let r = 0; r < Math.min(10, sample.length); r++) {
+        if (isNumeric(sample[r][c])) numCount++;
       }
       if (numCount >= 8) numericCols.push(c);
     }
@@ -2627,56 +2851,146 @@ function analyzeTable(csvText) {
     let xIsTime = timeCol >= 0;
     if (timeCol < 0) {
       let cnt0 = 0;
-      for (let r = 0; r < Math.min(10, rows.length); r++) if (isNumeric(rows[r][0])) cnt0++;
+      for (let r = 0; r < Math.min(10, sample.length); r++) if (isNumeric(sample[r][0])) cnt0++;
       if (cnt0 >= 8) {
         xCol = 0;
         xIsTime = false;
         headers[0] = headers[0].replace(/^\uFEFF/, '').replace(/^[^\x20-\x7E\u4e00-\u9fa5\(]+/, '').trim() || headers[0].trim();
-        const p = numericCols.indexOf(0);
-        if (p !== -1) numericCols.splice(p, 1);
+        const p2 = numericCols.indexOf(0);
+        if (p2 !== -1) numericCols.splice(p2, 1);
       } else {
         xCol = -1;
         xIsTime = false;
       }
     }
-    if (numericCols.length === 0) { loading.style.display = 'none'; return; }
+    if (numericCols.length === 0) { loading.style.display = 'none'; return null; }
 
-    const times = [];
-    const series = {};
-    for (const c of numericCols) series[c] = [];
+    return {
+      name: null,
+      headers: headers,
+      numericCols: numericCols,
+      timeCol: xCol,
+      xIsTime: xIsTime,
+      _text: text,
+      _start: start,
+      _delim: delim,
+      _cache: null
+    };
+  } catch (e) { return null; }
+}
 
-    for (let r = 0; r < rows.length; r++) {
-      let t;
-      if (xIsTime) {
-        t = parseTime(rows[r][xCol]);
-        if (!t || isNaN(t.getTime())) continue;
-      } else if (xCol >= 0) {
-        const v = rows[r][xCol];
-        t = isNumeric(v) ? parseFloat(v) : null;
-        if (t === null) continue;
-      } else {
-        t = r;
-      }
-      times.push(t);
-      for (const c of numericCols) {
-        series[c].push(isNumeric(rows[r][c]) ? parseFloat(rows[r][c]) : 0);
+// 第二階段：只解析指定欄位，回傳 { times, series, labels }
+function materializeTable(scan, cols) {
+  if (!scan || !scan._text) return null;
+  const key = cols.join(',');
+  if (scan._cache && scan._cache.key === key) return scan._cache.value;
+
+  const text = scan._text;
+  const delim = scan._delim;
+  const xCol = scan.timeCol;
+  const xIsTime = scan.xIsTime;
+  const series = {};
+  cols.forEach(function (c) { series[c] = []; });
+  const times = [];
+
+  const single = delim.length === 1;
+  const delimCode = single ? delim.charCodeAt(0) : -1;
+  const wanted = new Map();
+  cols.forEach(function (c) { wanted.set(c, 1); });
+  if (xCol >= 0) wanted.set(xCol, 1);
+
+  // 跳過標題列
+  let pos = scan._start;
+  let nl = text.indexOf('\n', pos);
+  pos = nl < 0 ? text.length : nl + 1;
+
+  let rowIdx = 0;
+  while (pos <= text.length) {
+    nl = text.indexOf('\n', pos);
+    if (nl < 0) nl = text.length;
+    if (nl > pos) {
+      const fields = single
+        ? extractWantedRange(text, pos, nl, delimCode, wanted)
+        : extractWantedSlow(text.slice(pos, nl), delim, wanted);
+      if (fields.count >= 2) {
+        let t = null;
+        if (xIsTime) {
+          const tv = parseTime(fields.vals[xCol]);
+          if (tv && !isNaN(tv.getTime())) t = tv;
+        } else if (xCol >= 0) {
+          const v = fields.vals[xCol];
+          t = isNumeric(v) ? parseFloat(v) : null;
+        } else {
+          t = rowIdx;
+        }
+        if (t !== null) {
+          times.push(t);
+          for (let k = 0; k < cols.length; k++) {
+            const c = cols[k];
+            const v = fields.vals[c];
+            series[c].push(isNumeric(v) ? parseFloat(v) : 0);
+          }
+          rowIdx++;
+        }
       }
     }
-    if (times.length < 2) { loading.style.display = 'none'; return; }
+    if (nl >= text.length) break;
+    pos = nl + 1;
+  }
+  if (times.length < 2) return null;
 
-    const labels = xIsTime ? times.map(d => fmtTimeShort(d)) : times.map(v => String(v));
-    if (xCol >= 0) headers[xCol] = headers[xCol].replace(/^\uFEFF/, '').replace(/^[^\w\(]+/, '').trim() || headers[xCol].trim();
-    return { headers: headers, numericCols: numericCols, times: times, series: series, labels: labels, timeCol: xCol, xIsTime: xIsTime };
-  } catch (e) { return null; }
+  const labels = xIsTime ? times.map(d => fmtTimeShort(d)) : times.map(v => String(v));
+  const value = { times: times, series: series, labels: labels };
+  scan._cache = { key: key, value: value };
+  return value;
+}
+
+// 第三階段（選用）：依時間區間取平均降採樣。
+// 時間桶用「絕對時間 ÷ 間隔」計算，同一間隔下不同檔案的桶會落在相同的時間格線。
+// sec <= 1 時直接回傳原資料（1 Hz 資料等同不取樣）。
+function downsampleMat(mat, sec) {
+  if (!mat || !mat.times || !mat.times.length) return mat;
+  if (!sec || sec <= 1) return mat;
+  const times = mat.times;
+  const cols = Object.keys(mat.series);
+  const isDate = times[0] instanceof Date;
+  const out = { times: [], series: {}, labels: [] };
+  cols.forEach(function (c) { out.series[c] = []; });
+
+  let curKey = null, curTime = null, cnt = 0;
+  const sum = {};
+  function flush() {
+    out.times.push(curTime);
+    cols.forEach(function (c) { out.series[c].push(sum[c] / cnt); });
+    out.labels.push(isDate ? fmtTimeShort(curTime) : String(curTime));
+  }
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i];
+    const k = isDate ? Math.floor(t.getTime() / (sec * 1000)) : Math.floor(Number(t) / sec);
+    if (k !== curKey) {
+      if (cnt > 0) flush();
+      curKey = k; curTime = t; cnt = 0;
+      for (let j = 0; j < cols.length; j++) sum[cols[j]] = 0;
+    }
+    for (let j = 0; j < cols.length; j++) {
+      const c = cols[j];
+      sum[c] += mat.series[c][i];
+    }
+    cnt++;
+  }
+  if (cnt > 0) flush();
+  out.rawCount = times.length;
+  return out;
 }
 
 function parseAndBuild(csvText, filename) {
   try {
-    const analyzed = analyzeTable(csvText);
-    if (!analyzed) { loading.style.display = "none"; return; }
-    currentData = analyzed;
-    const times = analyzed.times, series = analyzed.series, labels = analyzed.labels;
-    const numericCols = analyzed.numericCols, headers = analyzed.headers;
+    // 第一階段：只掃標題與前 30 列，不解析整檔
+    const scan = scanTable(csvText);
+    if (!scan) { loading.style.display = "none"; return; }
+    currentData = scan;
+    lastSingleSelected = null;
+    const numericCols = scan.numericCols, headers = scan.headers;
 
     loading.style.display = "none";
 
@@ -2728,7 +3042,18 @@ function parseAndBuild(csvText, filename) {
         return document.getElementById(cb.id).checked;
       }).map(function (cb) { return String(cb.name).trim().toLowerCase(); }));
       columnConfigDiv.style.display = 'none';
-      buildCharts(currentData.times, currentData.series, currentData.labels, selected, currentData.headers, currentData.timeCol);
+      // 第二階段：這時才逐列解析，且只解析勾選的欄位
+      lastSingleSelected = selected;
+      loading.style.display = 'block';
+      setTimeout(function () {
+        const mat = materializeTable(scan, selected);
+        loading.style.display = 'none';
+        if (!mat) { alert('檔案沒有足夠的資料列可繪圖（可能時間欄無法解析）'); return; }
+        // 第三階段（選用）：依取樣間隔取平均降採樣
+        const d = downsampleMat(mat, sampleSec);
+        updateSampleHint(mat.times.length, d.times.length);
+        buildCharts(d.times, d.series, d.labels, selected, scan.headers, scan.timeCol);
+      }, 0);
     });
 
   } catch(e) {
@@ -2967,6 +3292,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       setupPlotline(chart, canvas, labels, numericCols.map((_, i) => i));
       setupAxisEdit(chart, canvas, labels, times, timeCol);
       allCharts.push(chart);
+      chart._labels = labels;
       if (plotlineEnabled) syncZoomEnabledByPlotline();
 
       // Slope button
@@ -3336,6 +3662,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       setupCrosshair(chart, canvas, labels);
       setupPlotline(chart, canvas, labels, [colIdx]);
       setupAxisEdit(chart, canvas, labels, times, timeCol);
+      chart._labels = labels;
       allCharts.push(chart);
       if (plotlineEnabled) syncZoomEnabledByPlotline();
 
