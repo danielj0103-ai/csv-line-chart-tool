@@ -10,7 +10,7 @@
   ============================================================
   CSV 折線圖產生器 (CSV Line Chart Generator)
   作者 Author : 江國成 / Daniel
-   版本 Version: 3.1
+   版本 Version: 3.3
   說明        : 純前端單檔 HTML，離線可用（Chart.js 走 CDN）
   授權 License: © 2026 江國成 (Daniel). All rights reserved.
 
@@ -161,6 +161,51 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 .pl-table tbody tr:hover td { background:rgba(128,128,128,0.1); }
 .pl-table tbody tr:last-child td { border-bottom:none; }
 
+/* 斜率結果表（📈 全部斜率／📈 斜率）——比照 IV 讀值表格，數值對齊不擠成一行 */
+.slope-out {
+  margin-top:8px; padding:8px 10px; background:var(--out-bg);
+  border:1px solid var(--hairline); border-radius:12px;
+  max-height:320px; overflow:auto;
+}
+.slope-table { border-collapse:collapse; width:100%; font-size:12px; font-variant-numeric:tabular-nums; }
+.slope-table th, .slope-table td {
+  padding:5px 10px; text-align:right; white-space:nowrap;
+  border-bottom:1px solid var(--hairline);
+}
+.slope-table thead th {
+  color:var(--accent); font-weight:600; font-size:11px; letter-spacing:0.01em;
+  text-align:right; border-bottom:1px solid var(--accent);
+}
+.slope-table thead th.sl-name, .slope-table tbody td.sl-name { text-align:left; }
+.slope-table tbody td { color:var(--tick); }
+.slope-table tbody td.sl-idx { text-align:center; color:var(--dim); font-size:11px; }
+.slope-table tbody tr:hover td { background:rgba(128,128,128,0.1); }
+.slope-table tbody tr:last-child td { border-bottom:none; }
+.slope-note { padding:6px 2px; color:var(--result-fg); font-size:12px; }
+
+/* 欄位勾選面板：依單位分組（NLPM / kPa / ℃ …），群組前有統一核選方塊
+   群組標題獨佔一行，欄位在下方用「等寬網格」排列 → 填滿畫面寬度且核選方塊對齊 */
+.col-groups { margin:10px 0; }
+.col-group { margin:0 0 12px; }
+#columnConfig .cg-head {
+  display:flex; align-items:center; gap:6px; font-size:13px; font-weight:600;
+  color:var(--text); cursor:pointer; padding:3px 0 4px; margin-right:0;
+  border-bottom:1px solid var(--hairline);
+}
+.cg-head input { margin:0; }
+.cg-name { color:var(--accent); }
+.cg-count { color:var(--dim); font-size:11px; font-weight:400; }
+.cg-items {
+  display:grid; grid-template-columns:repeat(auto-fill, 240px);
+  gap:3px 18px; padding:4px 0 0 20px;
+}
+#columnConfig .cg-item {
+  display:flex; align-items:center; gap:6px; color:var(--tick); font-size:13px;
+  cursor:pointer; padding:2px 0; min-width:0; margin-right:0;
+}
+.cg-item input { margin:0; flex:0 0 auto; }
+.cg-item > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
 /* 圖表選單（popover） */
 .chart-menu-btn {
   background:transparent; border:none; color:var(--stat); font-size:16px;
@@ -310,7 +355,7 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 <button id="themeToggle" title="切換深色／淺色版面">☀️ 淺色版面</button>
 </div>
 <footer class="app-footer">
-  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v3.1</span>
+  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v3.3</span>
 
   <div class="dl-band">
     <div class="dl-title">下載離線使用：主程式與說明書，建議<b>三個都下載</b>放到同一資料夾</div>
@@ -1988,7 +2033,8 @@ function renderMultiPanel(opts) {
   let html = '<h4>📊 多檔疊圖：選擇要比較的欄位（共 ' + multiFiles.length + ' 個檔案）</h4>';
   html += '<div style="font-size:12px;color:var(--stat);margin-bottom:8px">'
     + '檔案：' + multiFiles.map(function (f) { return escHtml(f.name); }).join('、') + '</div>';
-  html += '<div id="multiCheckboxes" style="columns:180px;column-gap:24px;margin:10px 0"></div>';
+  html += '<div style="font-size:11px;color:var(--dim);margin-bottom:2px">分類排序：符號（℃、%…）→ 數字 → 字母 A→Z；同一類別內維持檔案原本順序</div>';
+  html += '<div id="multiCheckboxes" class="col-groups"></div>';
   html += '<div><label style="color:var(--accent);font-size:13px;cursor:pointer"><input type="checkbox" id="multiSelectAll" checked> 全選 / 取消全選</label></div>';
   html += '<div style="margin-top:10px">'
     + '<button id="multiConfirm" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:6px 24px;border-radius:4px;cursor:pointer;font-size:13px;margin-right:8px">✓ 確認疊圖</button>'
@@ -1997,37 +2043,45 @@ function renderMultiPanel(opts) {
     + '</div>';
   columnConfigDiv.innerHTML = html;
 
-  // 依單位分組排列（與單檔一致）
+  // 依欄位名稱尾端單位分組（同一單位只有一組），組序＝該單位第一次出現的位置
   const groups = {};
   const order = [];
   cols.forEach(function (c) {
     const key = getUnitKey(c.name);
     const norm = key.toLowerCase();
-    if (!(norm in groups)) { groups[norm] = []; order.push(norm); }
-    groups[norm].push(c);
+    if (!(norm in groups)) { groups[norm] = { key: key, items: [] }; order.push(norm); }
+    groups[norm].items.push(c);
   });
-  const sorted = [];
-  order.forEach(function (n) { groups[n].forEach(function (c) { sorted.push(c); }); });
 
   const box = document.getElementById('multiCheckboxes');
   const checks = [];
-  sorted.forEach(function (c, i) {
-    const id = 'mcb_' + i;
-    // 記住上次的勾選；從未勾過時維持原本的「全選」預設
-    const on = pickedColNames.size ? pickedColNames.has(c.name.trim().toLowerCase()) : true;
-    const lbl = document.createElement('label');
-    const fileList = c.refs.map(function (r) { return r.file.name; }).join('、');
-    lbl.style.cssText = 'display:flex;align-items:center;gap:6px;color:var(--tick);font-size:13px;cursor:pointer;padding:2px 0;break-inside:avoid';
-    lbl.innerHTML = '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="margin:0"> <span>' + escHtml(c.name)
-      + ' <span style="color:var(--dim);font-size:11px">（' + escHtml(fileList) + '）</span></span>';
-    lbl.title = c.name;
-    box.appendChild(lbl);
-    checks.push({ id: id, col: c, name: c.name });
+  const blocks = order.map(function (norm) {
+    const g = groups[norm];
+    g.items = g.items.map(function (c) {
+      // 記住上次的勾選；從未勾過時維持原本的「全選」預設
+      const on = pickedColNames.size ? pickedColNames.has(c.name.trim().toLowerCase()) : true;
+      const fileList = c.refs.map(function (r) { return r.file.name; }).join('、');
+      return {
+        col: c, checked: on, title: c.name,
+        html: escHtml(c.name) + ' <span style="color:var(--dim);font-size:11px">（' + escHtml(fileList) + '）</span>'
+      };
+    });
+    g.items.forEach(function (it) {
+      const id = 'mcb_' + checks.length;
+      it.id = id;
+      checks.push({ id: id, col: it.col, name: it.col.name });
+    });
+    return g;
   });
+  // 群組排序：符號 → 數字 → 字母 A→Z
+  blocks.sort(function (a, b) { return compareUnits(a.key, b.key); });
+  const master = document.getElementById('multiSelectAll');
+  const grouped = buildGroupedCheckboxes(box, blocks, { master: master });
 
-  document.getElementById('multiSelectAll').addEventListener('change', function () {
+  master.addEventListener('change', function () {
     const on = this.checked;
-    checks.forEach(function (c) { document.getElementById(c.id).checked = on; });
+    grouped.inputs.forEach(function (cb) { cb.checked = on; });
+    grouped.sync();
   });
   document.getElementById('multiConfirm').addEventListener('click', function () {
     const picked = checks.filter(function (c) { return document.getElementById(c.id).checked; });
@@ -3028,7 +3082,160 @@ function parseAndBuild(csvText, filename) {
   }
 }
 
-// 單檔欄位勾選面板。preCols 有值時（點檔名重開）以它預設勾選，否則沿用 pickedColNames
+// 依「單位分組的欄位勾選面板（含群組標題與統一核選方塊，三態：全選／半選／全不選）」
+// groups = [{ key: 'NLPM', items: [{ id, text|html, checked, title }] }]
+// 回傳 { inputs, sync, groups }，供「全選/取消全選」與確認鈕使用
+// 單位分組排序規則：特殊符號（℃、%…）→ 數字 → 字母 A→Z
+// unitSortKey(): 回傳 { g: 群組序, s: 主要排序字, l: 次要排序字 }
+function unitSortKey(key) {
+  const s = String(key == null ? '' : key).trim();
+  if (!s) return { g: 3, s: '', l: '' };
+  if (/[a-zA-Z]/.test(s)) {
+    const m = s.match(/[a-zA-Z]/);
+    return { g: 2, s: m[0].toLowerCase(), l: s.toLowerCase() };
+  }
+  if (/[0-9]/.test(s)) return { g: 1, s: s, l: s };
+  return { g: 0, s: s, l: s };   // 純符號（℃、%、°…）
+}
+function compareUnits(a, b) {
+  const ka = unitSortKey(a), kb = unitSortKey(b);
+  if (ka.g !== kb.g) return ka.g - kb.g;
+  if (ka.s !== kb.s) return ka.s < kb.s ? -1 : 1;
+  if (ka.l !== kb.l) return ka.l < kb.l ? -1 : 1;
+  return 0;
+}
+
+function buildGroupedCheckboxes(box, groups, opts) {
+  opts = opts || {};
+  box.innerHTML = '';
+  const groupEls = [];
+  groups.forEach(function (g) {
+    const wrap = document.createElement('div');
+    wrap.className = 'col-group';
+    const head = document.createElement('label');
+    head.className = 'cg-head';
+    head.title = '點擊可一次勾選／取消這個單位的所有欄位';
+    const gcb = document.createElement('input');
+    gcb.type = 'checkbox';
+    gcb.className = 'cg-all';
+    const gname = document.createElement('span');
+    gname.className = 'cg-name';
+    gname.textContent = g.key;
+    const gcnt = document.createElement('span');
+    gcnt.className = 'cg-count';
+    head.appendChild(gcb); head.appendChild(gname); head.appendChild(gcnt);
+    wrap.appendChild(head);
+    const itemsBox = document.createElement('div');
+    itemsBox.className = 'cg-items';
+    wrap.appendChild(itemsBox);
+    const inputs = [];
+    (g.items || []).forEach(function (it) {
+      const lbl = document.createElement('label');
+      lbl.className = 'cg-item';
+      if (it.title) lbl.title = it.title;
+      const icb = document.createElement('input');
+      icb.type = 'checkbox';
+      if (it.id) icb.id = it.id;
+      icb.checked = !!it.checked;
+      const sp = document.createElement('span');
+      if (it.html) sp.innerHTML = it.html; else sp.textContent = it.text || '';
+      lbl.appendChild(icb); lbl.appendChild(sp);
+      itemsBox.appendChild(lbl);
+      inputs.push(icb);
+    });
+    box.appendChild(wrap);
+    groupEls.push({ cb: gcb, cnt: gcnt, inputs: inputs });
+  });
+
+  const allInputs = [];
+  groupEls.forEach(function (gr) { gr.inputs.forEach(function (i) { allInputs.push(i); }); });
+
+  function syncGroup(gr) {
+    const n = gr.inputs.filter(function (i) { return i.checked; }).length;
+    const total = gr.inputs.length;
+    const all = total > 0 && n === total;
+    gr.cb.checked = all;
+    gr.cb.indeterminate = n > 0 && !all;
+    gr.cnt.textContent = total ? '(' + n + '/' + total + ')' : '';
+  }
+
+  function sync() {
+    groupEls.forEach(syncGroup);
+    const master = opts.master;
+    if (master) {
+      const n = allInputs.filter(function (i) { return i.checked; }).length;
+      const total = allInputs.length;
+      master.checked = total > 0 && n === total;
+      master.indeterminate = n > 0 && n < total;
+    }
+  }
+
+  groupEls.forEach(function (gr) {
+    gr.cb.addEventListener('click', function () {
+      const target = this.checked;
+      gr.inputs.forEach(function (i) { i.checked = target; });
+      sync();
+      if (opts.onChange) opts.onChange();
+    });
+    gr.inputs.forEach(function (i) {
+      i.addEventListener('change', function () {
+        sync();
+        if (opts.onChange) opts.onChange();
+      });
+    });
+  });
+
+  sync();
+  layoutGroupRows(box);
+  return { inputs: allInputs, groups: groupEls, sync: sync };
+}
+
+// 量測面板內最寬的欄位項目 → 所有群組共用同一欄寬，讓核選方塊整齊對正（且不截斷文字）
+// 排列規則＝直行橫列：先由上往下填滿一欄，該欄滿了才往右換下一欄
+function layoutGroupRows(root) {
+  const scope = root || document;
+  const boxes = [];
+  scope.querySelectorAll('.col-group').forEach(function (g) {
+    const items = g.querySelector('.cg-items');
+    if (items) boxes.push(items);
+  });
+  if (!boxes.length) return;
+  // 先量寬：取消欄寬並讓項目依內容寬度收縮，才能量到完整寬度
+  boxes.forEach(function (items) {
+    items.style.gridTemplateColumns = 'none';
+    items.style.gridTemplateRows = 'none';
+    items.style.justifyItems = 'start';
+  });
+  let maxW = 0;
+  boxes.forEach(function (items) {
+    items.querySelectorAll('.cg-item').forEach(function (l) {
+      const w = l.getBoundingClientRect().width;
+      if (w > maxW) maxW = w;
+    });
+  });
+  const colW = Math.ceil(maxW) + 6;
+  const gap = 18;
+  boxes.forEach(function (items) {
+    items.style.justifyItems = '';
+    const avail = items.clientWidth - 20;          // 扣掉左側縮排
+    let cols = Math.max(1, Math.floor((avail + gap) / (colW + gap)));
+    const n = items.querySelectorAll('.cg-item').length;
+    const rows = Math.max(1, Math.ceil(n / cols));
+    cols = Math.max(1, Math.ceil(n / rows));        // 最後一欄不滿也可以
+    items.style.gridTemplateColumns = 'repeat(' + cols + ', ' + colW + 'px)';
+    items.style.gridTemplateRows = 'repeat(' + rows + ', auto)';
+    items.style.gridAutoFlow = 'column';            // 直行橫列
+  });
+}
+
+// 視窗寬度變化時重新排版（讓欄位重新填滿寬度）
+let _layoutTimer = null;
+window.addEventListener('resize', function () {
+  clearTimeout(_layoutTimer);
+  _layoutTimer = setTimeout(function () { layoutGroupRows(); }, 150);
+});
+
+
 function showColumnPanel(scan, filename, preCols) {
     currentData = scan;
     const numericCols = scan.numericCols, headers = scan.headers;
@@ -3039,41 +3246,45 @@ function showColumnPanel(scan, filename, preCols) {
     columnConfigDiv.style.display = 'block';
      columnConfigDiv.innerHTML = '<h4>📊 選擇要顯示的 Y 軸資料</h4>'
       + '<div style="font-size:12px;color:var(--stat);margin-bottom:8px">檔案：' + escHtml(filename || '') + '</div>'
-      + '<div id="colCheckboxes" style="columns:180px;column-gap:24px;margin:10px 0"></div>'
+      + '<div style="font-size:11px;color:var(--dim);margin-bottom:2px">分類排序：符號（℃、%…）→ 數字 → 字母 A→Z；同一類別內維持檔案原本順序</div>'
+      + '<div id="colCheckboxes" class="col-groups"></div>'
       + '<div><label style="color:var(--accent);font-size:13px;cursor:pointer"><input type="checkbox" id="selectAllCols" checked> 全選 / 取消全選</label></div>'
       + '<div style="margin-top:10px"><button id="confirmCols" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:6px 24px;border-radius:4px;cursor:pointer;font-size:13px;margin-right:8px">✓ 確認選擇</button>'
       + '<button id="cancelCols" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:6px 20px;border-radius:4px;cursor:pointer;font-size:13px">取消</button></div>';
 
     const cbDiv = document.getElementById('colCheckboxes');
     const checkboxes = [];
-    // 同單位分組（與自訂Y軸範圍一致，不分大小寫）
+    // 依欄位名稱尾端單位分組（同一單位只有一組），組序＝該單位第一次出現的位置
     const colGroups = {};
     const colGroupOrder = [];
-    numericCols.forEach(function(col, i) {
-      const key = getUnitKey(headers[col]);
-      const norm = key.toLowerCase();
-      if (!(norm in colGroups)) { colGroups[norm] = []; colGroupOrder.push(norm); }
-      colGroups[norm].push({ col: col, origIdx: i });
-    });
-    const colSorted = [];
-    colGroupOrder.forEach(function(norm) { colGroups[norm].forEach(function(it) { colSorted.push(it); }); });
-    colSorted.forEach(function(entry, newIdx) {
-      const col = entry.col;
-      const id = 'colcb_' + newIdx;
+    numericCols.forEach(function(col) {
       const name = headers[col];
+      const key = getUnitKey(name);
+      const norm = key.toLowerCase();
+      if (!(norm in colGroups)) { colGroups[norm] = { key: key, items: [] }; colGroupOrder.push(norm); }
       // 重開面板：勾回目前畫的欄位；否則記住上次的勾選；從未勾過時維持原本的「全選」預設
       const on = preCols ? preCols.indexOf(col) >= 0
         : (pickedColNames.size ? pickedColNames.has(String(name).trim().toLowerCase()) : true);
-      const lbl = document.createElement('label');
-      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;color:var(--tick);font-size:13px;cursor:pointer;padding:2px 0;break-inside:avoid';
-      lbl.innerHTML = '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="margin:0"> <span>' + name + '</span>';
-      cbDiv.appendChild(lbl);
-      checkboxes.push({ id, col, name });
+      colGroups[norm].items.push({ col: col, name: name, checked: on, title: name });
     });
+    const blocks = colGroupOrder.map(function (norm) { return colGroups[norm]; });
+    // 群組排序：符號 → 數字 → 字母 A→Z（規則寫在面板上，使用者看得懂）
+    blocks.sort(function (a, b) { return compareUnits(a.key, b.key); });
+    blocks.forEach(function (g) {
+      g.items.forEach(function (it) {
+        const id = 'colcb_' + checkboxes.length;
+        it.id = id;
+        it.text = it.name;
+        checkboxes.push({ id: id, col: it.col, name: it.name });
+      });
+    });
+    const master = document.getElementById('selectAllCols');
+    const grouped = buildGroupedCheckboxes(cbDiv, blocks, { master: master });
 
-    document.getElementById('selectAllCols').addEventListener('change', function() {
+    master.addEventListener('change', function() {
       const checked = this.checked;
-      checkboxes.forEach(cb => document.getElementById(cb.id).checked = checked);
+      grouped.inputs.forEach(function(cb) { cb.checked = checked; });
+      grouped.sync();
     });
 
     document.getElementById('cancelCols').addEventListener('click', function() {
@@ -3158,6 +3369,32 @@ function calcSlope(dataArr, chart) {
   for (let i = 0; i < n; i++) { ssr += (d[i] - (m * i + b)) ** 2; sst += (d[i] - my) ** 2; }
   const r2 = sst > 0 ? 1 - ssr / sst : 0;
   return { m, b, r2, n, xMin };
+}
+
+// 斜率結果表：欄位對齊的表格（比照 IV 讀值表格樣式）
+// rows = [{ label, ok, m, b, r2, n, color }]
+// nz(): 避免顯示 -0.0000（負零）
+function nz(v, d) { const x = Number(Number(v).toFixed(d)); return (x === 0 ? 0 : x).toFixed(d); }
+
+function renderSlopeTable(box, rows) {
+  if (!box) return;
+  if (!rows || !rows.length) {
+    box.innerHTML = '<div class="slope-out"><div class="slope-note">沒有可計算的資料</div></div>';
+    return;
+  }
+  let html = '<div class="slope-out"><table class="slope-table"><thead><tr>'
+    + '<th>序號</th><th class="sl-name">欄位</th><th>斜率</th><th>截距</th><th>R²</th><th>資料點數</th>'
+    + '</tr></thead><tbody>';
+  rows.forEach(function (r, i) {
+    html += '<tr><td class="sl-idx">' + (i + 1) + '</td>'
+      + '<td class="sl-name"' + (r.color ? ' style="color:' + r.color + '"' : '') + '>' + escHtml(r.label) + '</td>'
+      + '<td>' + (r.ok ? nz(r.m, 4) : '—') + '</td>'
+      + '<td>' + (r.ok ? nz(r.b, 2) : '—') + '</td>'
+      + '<td>' + (r.ok ? nz(r.r2, 4) : '—') + '</td>'
+      + '<td>' + (r.ok ? r.n : '—') + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  box.innerHTML = html;
 }
 
 // Simple CSV line parser (handles quoted fields)
@@ -3347,16 +3584,20 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       slopeAllBtn.style.cssText = 'background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px';
       const resultAllDiv = document.createElement('div');
       resultAllDiv.setAttribute('data-role', 'slope-result');
-      resultAllDiv.style.cssText = 'text-align:center;color:var(--result-fg);font-size:12px;margin-top:4px;min-height:18px';
+      resultAllDiv.style.cssText = 'margin-top:6px;min-height:18px';
       c.appendChild(resultAllDiv);
       slopeAllBtn.onclick = function() {
-        const parts = [];
-        numericCols.forEach((col) => {
+        const rows = [];
+        numericCols.forEach((col, i) => {
           const r = calcSlope(series[col], chart);
-          if (r) parts.push(headers[col] + ': ' + r.m.toFixed(4) + ' (R²=' + r.r2.toFixed(3) + ')');
-          else parts.push(headers[col] + ': N/A');
+          const ds = chart.data.datasets[i];
+          rows.push({
+            label: headers[col], ok: !!r,
+            m: r ? r.m : 0, b: r ? r.b : 0, r2: r ? r.r2 : 0, n: r ? r.n : 0,
+            color: (ds && typeof ds.borderColor === 'string') ? ds.borderColor : ''
+          });
         });
-        resultAllDiv.textContent = parts.join('  |  ');
+        renderSlopeTable(resultAllDiv, rows);
       };
       allHintDiv.appendChild(slopeAllBtn);
 
@@ -3717,22 +3958,27 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
       slopeBtn.style.cssText = 'background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px';
       const resultDiv = document.createElement('div');
       resultDiv.setAttribute('data-role', 'slope-result');
-      resultDiv.style.cssText = 'text-align:center;color:var(--result-fg);font-size:12px;margin-top:4px;min-height:18px';
+      resultDiv.style.cssText = 'margin-top:6px;min-height:18px';
       c.appendChild(resultDiv);
       slopeBtn.onclick = function() {
         const r = calcSlope(dataArr, chart);
-        if (!r) { resultDiv.textContent = '請先拖曳縮放選擇範圍'; return; }
+        if (!r) {
+          resultDiv.innerHTML = '<div class="slope-out"><div class="slope-note">請先拖曳縮放選擇範圍</div></div>';
+          return;
+        }
         const regData = new Array(labels.length).fill(null);
         for (let i = r.xMin; i < r.xMin + r.n; i++) regData[i] = r.m * (i - r.xMin) + r.b;
         const ri = chart.data.datasets.findIndex(d => d._reg);
         if (ri >= 0) chart.data.datasets.splice(ri, 1);
         chart.data.datasets.push({
-          _reg: true, label: '迴歸 (斜率=' + r.m.toFixed(4) + ')', data: regData,
+          _reg: true, label: '迴歸 (斜率=' + nz(r.m, 4) + ')', data: regData,
           borderColor: '#ff0000', borderWidth: 2, borderDash: [6,3], pointRadius: 0, fill: false,
           yAxisID: chart.data.datasets[0].yAxisID || 'y',
         });
         chart.update();
-        resultDiv.textContent = '斜率 = ' + r.m.toFixed(4) + '  截距 = ' + r.b.toFixed(2) + '  R² = ' + r.r2.toFixed(4) + '  (n=' + r.n + ')';
+        renderSlopeTable(resultDiv, [{
+          label: title, ok: true, m: r.m, b: r.b, r2: r.r2, n: r.n, color: color
+        }]);
       };
       hintDiv.appendChild(slopeBtn);
 
