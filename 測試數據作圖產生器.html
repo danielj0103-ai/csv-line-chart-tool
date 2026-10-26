@@ -1552,20 +1552,18 @@ function attachColDrag(outDiv, colOrder, onChange) {
     return to;
   }
 
-// 依「欄位寬度」推算各欄在新順序下的自然位置（不受正在播放的動畫影響）。
+  // 依「插槽位置」推算各欄在新順序下的自然位置（不受正在播放的動畫影響）。
   // FLIP 若用 getBoundingClientRect() 量 before，會量到別欄「動畫播到一半」的位置，
   // 快速連續跨越時 delta 會愈縮愈小並把上一段動畫取消重開，結果看起來就是沒動畫。
-  // 這裡改以寬度累加求出純粹的版面位置；每欄寬度在拖曳期間固定，故可精確推算。
+  // 插槽本身不會移動，第 i 個插槽的左緣就是拖曳開始時第 i 欄的左緣（d.orig[i].left）；
+  // 不要用「寬度累加」，起點若取被拖欄的 left，拖右側欄位時整組位置會偏到左邊。
   function naturals(order) {
     const d = drag;
     const shift = outDiv.scrollLeft - d.startScroll;
     const m = {};
-    let x = d.baseLeft;
     for (let i = 0; i < order.length; i++) {
-      m[order[i]] = x;
-      x += d.widths[order[i]];
+      if (d.orig[i]) m[order[i]] = d.orig[i].left - shift;
     }
-    for (const k in m) m[k] -= shift;
     return m;
   }
 
@@ -1656,16 +1654,10 @@ function attachColDrag(outDiv, colOrder, onChange) {
       grabX: e.clientX, px: e.clientX,
       grabOffset: e.clientX - r.left,
       width: r.width,
-orig: hs.map(function (x) {
+      orig: hs.map(function (x) {
         const q = x.getBoundingClientRect();
         return { left: q.left, w: q.width };
       }),
-      widths: (function () {
-        const w = {};
-        hs.forEach(function (x) { w[x.getAttribute('data-col')] = x.getBoundingClientRect().width; });
-        return w;
-      })(),
-      baseLeft: r.left,
       hs: hs, cells: cellsOf(th.getAttribute('data-col')),
       slotLeft: r.left,
       box: outDiv.getBoundingClientRect(),
