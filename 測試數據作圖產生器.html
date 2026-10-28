@@ -10,7 +10,7 @@
   ============================================================
   CSV 折線圖產生器 (CSV Line Chart Generator)
   作者 Author : 江國成 / Daniel
-   版本 Version: 3.4
+   版本 Version: 3.5
   說明        : 純前端單檔 HTML，離線可用（Chart.js 走 CDN）
   授權 License: © 2026 江國成 (Daniel). All rights reserved.
 
@@ -368,7 +368,7 @@ canvas { max-width:100%; width:100% !important; cursor:crosshair; }
 <button id="themeToggle" title="切換深色／淺色版面">☀️ 淺色版面</button>
 </div>
 <footer class="app-footer">
-  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v3.4</span>
+  <span class="author">測試數據作圖產生器</span> · by <span class="author">Daniel</span><span class="ver">v3.5</span>
 
   <div class="dl-band">
     <div class="dl-title">下載離線使用：主程式與說明書，建議<b>三個都下載</b>放到同一資料夾</div>
@@ -1881,7 +1881,8 @@ function findIdxByTime(times, str) {
   }
   return best;
 }
-function askRange(titleText, labelA, valA, labelB, valB, cb, stepVal) {
+let lastAxisColor = '#bf5af2';   // 記住上次自訂的軸顏色，下次開視窗沿用
+function askRange(titleText, labelA, valA, labelB, valB, cb, stepVal, withColor) {
   document.querySelectorAll('.range-modal').forEach(el => el.remove());
   const ov = document.createElement('div');
   ov.className = 'range-modal';
@@ -1891,12 +1892,23 @@ function askRange(titleText, labelA, valA, labelB, valB, cb, stepVal) {
   const stepHtml = (stepVal === null || stepVal === undefined) ? '' : ''
     + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">刻度間隔（留白 = 自動）</label>'
     + '<input class="rvC" value="' + stepVal + '" placeholder="例如 0.05" style="width:100%;margin-bottom:12px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">';
+  // 軸顏色：withColor 傳 true（未自訂過）或目前的自訂色字串（勾起來並帶入色票）
+  const colorOn = typeof withColor === 'string';
+  const colorHtml = withColor
+    ? '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">軸顏色（刻度＋標題；Y 軸連曲線一起換）</label>'
+      + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+      + '<input type="color" class="rvColor" value="' + (colorOn ? withColor : lastAxisColor) + '"'
+      + ' style="width:40px;height:26px;padding:1px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:3px;cursor:pointer">'
+      + '<label style="display:flex;align-items:center;gap:4px;color:var(--tick);font-size:12px;cursor:pointer;user-select:none">'
+      + '<input type="checkbox" class="rvColorOn"' + (colorOn ? ' checked' : '') + ' style="margin:0"> 自訂顏色（不勾 = 用原本顏色）</label></div>'
+    : '';
   box.innerHTML = '<h4 style="color:var(--accent);font-size:14px;margin-bottom:10px">' + titleText + '</h4>'
     + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">' + labelA + '</label>'
     + '<input class="rvA" value="' + valA + '" style="width:100%;margin-bottom:8px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">'
     + '<label style="display:block;color:var(--tick);font-size:12px;margin-bottom:3px">' + labelB + '</label>'
     + '<input class="rvB" value="' + valB + '" style="width:100%;margin-bottom:12px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);border-radius:3px;padding:4px 6px;font-size:12px">'
     + stepHtml
+    + colorHtml
     + '<div style="text-align:right"><button class="rvOk" style="background:var(--btn-bg);color:var(--text);border:1px solid var(--accent);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:6px">套用</button>'
     + '<button class="rvCancel" style="background:var(--btn-bg);color:var(--btn-fg);border:1px solid var(--btn-border);padding:4px 16px;border-radius:4px;cursor:pointer;font-size:12px">取消</button></div>';
   ov.appendChild(box);
@@ -1905,7 +1917,13 @@ function askRange(titleText, labelA, valA, labelB, valB, cb, stepVal) {
   box.querySelector('.rvCancel').onclick = function() { ov.remove(); };
   box.querySelector('.rvOk').onclick = function() {
     const cIn = box.querySelector('.rvC');
-    cb(box.querySelector('.rvA').value.trim(), box.querySelector('.rvB').value.trim(), cIn ? cIn.value.trim() : null);
+    const colOn = box.querySelector('.rvColorOn');
+    let colVal = null;
+    if (colOn && colOn.checked) {
+      colVal = box.querySelector('.rvColor').value;
+      lastAxisColor = colVal;
+    }
+    cb(box.querySelector('.rvA').value.trim(), box.querySelector('.rvB').value.trim(), cIn ? cIn.value.trim() : null, colVal);
     ov.remove();
   };
   box.addEventListener('keydown', function(e) {
@@ -1931,6 +1949,59 @@ function applyAxisStep(opts, step) {
     opts.ticks.autoSkip = false;
   }
 }
+
+// 軸自訂顏色時，綁在該軸上的曲線一起換色（一軸一線才換；多線共軸分不出彼此，只換軸）。
+// X 軸不對應任何單一線段，不動線。color = null 時把曲線還原成各自原色。
+function applyAxisLineColor(chart, id, color) {
+  if (id === 'x' || !chart.data || !chart.data.datasets) return;
+  const bound = chart.data.datasets.filter(function(ds) {
+    return !ds._reg && (ds.yAxisID || 'y') === id;
+  });
+  if (bound.length !== 1) return;
+  const ds = bound[0];
+  if (color) {
+    if (ds._defBorder === undefined) {   // 第一次自訂才記原色，之後反覆換色都以它為基準
+      ds._defBorder = ds.borderColor;
+      if (typeof ds.backgroundColor === 'string') ds._defBg = ds.backgroundColor;
+      if (typeof ds.pointBackgroundColor === 'string') ds._defPoint = ds.pointBackgroundColor;
+    }
+    ds.borderColor = color;
+    if (ds._defBg !== undefined) {
+      // 原底色是「邊框色+33」的透明版（個別圖 fill）→ 跟著換透明版；否則直接同色（IV 的點底色）
+      ds.backgroundColor = (typeof ds._defBorder === 'string' && ds._defBg.toLowerCase() === ds._defBorder.toLowerCase() + '33') ? color + '33' : color;
+    }
+    if (ds._defPoint !== undefined) ds.pointBackgroundColor = color;
+  } else if (ds._defBorder !== undefined) {
+    ds.borderColor = ds._defBorder;
+    if (ds._defBg !== undefined) ds.backgroundColor = ds._defBg;
+    if (ds._defPoint !== undefined) ds.pointBackgroundColor = ds._defPoint;
+  }
+}
+
+// 雙擊軸範圍時可順便自訂軸顏色（刻度＋標題＋該軸曲線）；color = null 表示還原預設色。
+// 預設色分兩類：建立時記下的固定色（_defTick／_defTitle，如曲線色、功率軸橘色），
+// 或主題色軸（無 _defTick）依目前主題的 ct('xtick')／ct('axisTitle') 還原。
+function setAxisColor(chart, id, color) {
+  const s = chart.options.scales[id];
+  if (!s) return;
+  if (!s.ticks) s.ticks = {};
+  if (color) {
+    s._customColor = color;
+    s.ticks.color = color;
+    if (s.title) s.title.color = color;
+    applyAxisLineColor(chart, id, color);
+  } else {
+    delete s._customColor;
+    if (s._defTick) {
+      s.ticks.color = s._defTick;
+      if (s.title && s._defTitle) s.title.color = s._defTitle;
+    } else {
+      s.ticks.color = ct('xtick');
+      if (s.title) s.title.color = ct('axisTitle');
+    }
+    applyAxisLineColor(chart, id, null);
+  }
+}
 function setupAxisEdit(chart, canvas, labels, times, timeCol) {
   canvas.addEventListener('dblclick', function(e) {
     const ca = chart.chartArea;
@@ -1951,14 +2022,15 @@ function setupAxisEdit(chart, canvas, labels, times, timeCol) {
         const defHi = opts.max !== undefined ? opts.max : sc.max;
         const isLinear = sc.type === 'linear';
         const defStep = isLinear && opts.ticks && typeof opts.ticks.stepSize === 'number' ? opts.ticks.stepSize : '';
-        askRange('✏️ 手動設定 Y 軸範圍 — ' + axTitle, '起始值', defLo, '結束值', defHi, function(a, b, step) {
+        askRange('✏️ 手動設定 Y 軸範圍 — ' + axTitle, '起始值', defLo, '結束值', defHi, function(a, b, step, color) {
           const lo = parseFloat(a), hi = parseFloat(b);
           if (isNaN(lo) || isNaN(hi) || lo >= hi) { alert('請輸入有效數值（起始值需小於結束值）'); return; }
           opts.min = lo;
           opts.max = hi;
           if (isLinear) applyAxisStep(opts, step);
+          setAxisColor(chart, id, color);
           chart.update('none');
-        }, isLinear ? defStep : null);
+        }, isLinear ? defStep : null, opts._customColor || true);
         return;
       }
     }
@@ -1985,22 +2057,23 @@ function setupAxisEdit(chart, canvas, labels, times, timeCol) {
         return s;
       };
       if (xIsTime) {
-        askRange('⏱️ 手動設定 X 軸時間範圍', '起始時間 (HH:mm:ss)', labelAt(i0), '結束時間 (HH:mm:ss)', labelAt(i1), function(a, b) {
+        askRange('⏱️ 手動設定 X 軸時間範圍', '起始時間 (HH:mm:ss)', labelAt(i0), '結束時間 (HH:mm:ss)', labelAt(i1), function(a, b, step, color) {
           const j0 = findIdxByTime(times, a);
           const j1 = findIdxByTime(times, b);
           if (j0 === null || j1 === null || j0 < 0 || j1 < 0) { alert('時間格式無法辨識，請輸入 HH:mm:ss'); return; }
           if (j0 >= j1) { alert('起始時間需早於結束時間'); return; }
           xs.min = j0;
           xs.max = j1;
+          setAxisColor(chart, 'x', color);
           chart.update('none');
           applyZoomSync(chart);
-        });
+        }, undefined, xs._customColor || true);
       } else if (timeCol >= 0) {
         const xHdr = (chart.options.scales.x.title && chart.options.scales.x.title.text) || 'X';
         const xSc = chart.scales.x;
         const xLinear = xSc && xSc.type === 'linear';
         const xStep = xLinear && xs.ticks && typeof xs.ticks.stepSize === 'number' ? xs.ticks.stepSize : '';
-        askRange('🔢 手動設定 X 軸範圍 — ' + xHdr, '起始值', labelAt(i0), '結束值', labelAt(i1), function(a, b, step) {
+        askRange('🔢 手動設定 X 軸範圍 — ' + xHdr, '起始值', labelAt(i0), '結束值', labelAt(i1), function(a, b, step, color) {
           const j0 = findIdxByTime(times, a);
           const j1 = findIdxByTime(times, b);
           if (j0 === null || j1 === null || j0 < 0 || j1 < 0) { alert('數值格式無法辨識'); return; }
@@ -2008,18 +2081,20 @@ function setupAxisEdit(chart, canvas, labels, times, timeCol) {
           xs.min = j0;
           xs.max = j1;
           if (xLinear) applyAxisStep(xs, step);
+          setAxisColor(chart, 'x', color);
           chart.update('none');
           applyZoomSync(chart);
-        }, xLinear ? xStep : null);
+        }, xLinear ? xStep : null, xs._customColor || true);
       } else {
-        askRange('🔢 手動設定 X 軸索引範圍', '起始索引', i0, '結束索引', i1, function(a, b) {
+        askRange('🔢 手動設定 X 軸索引範圍', '起始索引', i0, '結束索引', i1, function(a, b, step, color) {
           const j0 = parseInt(a, 10), j1 = parseInt(b, 10);
           if (isNaN(j0) || isNaN(j1) || j0 < 0 || j1 >= n || j0 >= j1) { alert('請輸入有效索引（0 ～ ' + (n - 1) + '，起始需小於結束）'); return; }
           xs.min = j0;
           xs.max = j1;
+          setAxisColor(chart, 'x', color);
           chart.update('none');
           applyZoomSync(chart);
-        });
+        }, undefined, xs._customColor || true);
       }
     }
   });
@@ -2322,6 +2397,7 @@ function buildMultiChart(selectedCols) {
       s.min = undefined;
       s.max = undefined;
       if (s.ticks) { s.ticks.stepSize = undefined; s.ticks.autoSkip = undefined; }  // 一起還原自動跳格
+      setAxisColor(multiChart, k, null);  // 還原雙擊自訂的軸顏色
     });
     clearChartPlotline(multiChart);
     multiChart.update('none');
@@ -2799,14 +2875,15 @@ function setupIVAxisEdit(chart, canvas) {
         const defLo = opts.min !== undefined ? opts.min : sc.min;
         const defHi = opts.max !== undefined ? opts.max : sc.max;
         const defStep = (opts.ticks && typeof opts.ticks.stepSize === 'number') ? opts.ticks.stepSize : '';
-        askRange('✏️ 手動設定軸範圍 — ' + title, '起始值', defLo, '結束值', defHi, function(a, b, step) {
+        askRange('✏️ 手動設定軸範圍 — ' + title, '起始值', defLo, '結束值', defHi, function(a, b, step, color) {
           const lo = parseFloat(a), hi = parseFloat(b);
           if (isNaN(lo) || isNaN(hi) || lo >= hi) { alert('請輸入有效數值（起始值需小於結束值）'); return; }
           opts.min = lo;
           opts.max = hi;
           applyAxisStep(opts, step);
+          setAxisColor(chart, id, color);
           chart.update('none');
-        }, defStep);
+        }, defStep, opts._customColor || true);
         return;
       }
     }
@@ -2819,14 +2896,15 @@ function setupIVAxisEdit(chart, canvas) {
       const defHi = opts.max !== undefined ? opts.max : sc.max;
       const defStep = (opts.ticks && typeof opts.ticks.stepSize === 'number') ? opts.ticks.stepSize : '';
       const xTitle = (sc.options.title && sc.options.title.text) || 'X';
-      askRange('✏️ 手動設定軸範圍 — ' + xTitle, '起始值', defLo, '結束值', defHi, function(a, b, step) {
+      askRange('✏️ 手動設定軸範圍 — ' + xTitle, '起始值', defLo, '結束值', defHi, function(a, b, step, color) {
         const lo = parseFloat(a), hi = parseFloat(b);
         if (isNaN(lo) || isNaN(hi) || lo >= hi) { alert('請輸入有效數值（起始值需小於結束值）'); return; }
         opts.min = lo;
         opts.max = hi;
         applyAxisStep(opts, step);
+        setAxisColor(chart, 'x', color);
         chart.update('none');
-      }, defStep);
+      }, defStep, opts._customColor || true);
     }
   });
 }
@@ -3112,6 +3190,7 @@ if (!ivSeries.length) return;
           title: { display: true, text: ivPowerTitle(), color: '#ff9f0a' },
           ticks: { color: '#ff9f0a', font: { size: 11 } },
           grid: { drawOnChartArea: false },
+          _defTick: '#ff9f0a', _defTitle: '#ff9f0a',
           border: { color: ct('grid') },
         },
       },
@@ -3210,6 +3289,7 @@ if (!ivSeries.length) return;
       s.min = undefined;
       s.max = undefined;
       if (s.ticks) { s.ticks.stepSize = undefined; s.ticks.autoSkip = undefined; }  // 一起還原自動跳格
+      setAxisColor(ivChart, k, null);  // 還原雙擊自訂的軸顏色
     });
     // 一併清掉讀值：圖上的垂直標記與底下表格
     clearIVPlotline();
@@ -3329,7 +3409,9 @@ function scanTable(csvText) {
     const headers = rawHeaders.map(h => {
       let s = h.replace(/^['"]|['"]$/g, '').trim().replace(/^\uFEFF/, '');
       if (s.includes('ime (Sec)')) s = s.replace(/^.*ime/, 'Time');
-      s = s.replace(/^[^\w\(]+/, '').trim();
+      // 注意：\w 不含中文，開頭中文會被整段剝掉（例：「第一顆堆1st(V)」→「1st(V)」）。
+      // 字元類別要與下方 X 軸標題的清理一致：允許可印 ASCII 與 CJK 中文。
+      s = s.replace(/^[^\x20-\x7E\u4e00-\u9fa5\(]+/, '').trim();
       return s || h.trim();
     });
 
@@ -3766,6 +3848,7 @@ function resetChart(id) {
     s.min = undefined;
     s.max = undefined;
     if (s.ticks) { s.ticks.stepSize = undefined; s.ticks.autoSkip = undefined; }  // 一起還原自動跳格
+    setAxisColor(ch, k, null);  // 還原雙擊自訂的軸顏色
   });
   // 移除迴歸線
   const ri = ch.data.datasets.findIndex(d => d._reg);
@@ -3945,10 +4028,11 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
           borderColor: function(ctx) {
             const lo = ctx.chart['_thLo_' + ctx.datasetIndex];
             const hi = ctx.chart['_thHi_' + ctx.datasetIndex];
-            if (lo === undefined || hi === undefined) return dsColor;
+            const base = ctx.chart.data.datasets[ctx.datasetIndex].borderColor;  // 跟著自訂軸色走
+            if (lo === undefined || hi === undefined) return base;
             const y0 = ctx.p0.parsed.y, y1 = ctx.p1.parsed.y;
             if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return '#ff453a';
-            return dsColor;
+            return base;
           },
           borderWidth: function(ctx) {
             const lo = ctx.chart['_thLo_' + ctx.datasetIndex];
@@ -3965,6 +4049,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
         title: { display: true, text: headers[col], color: dsColor },
         ticks: { color: dsColor },
         grid: i > 0 ? { drawOnChartArea: false } : { color: ct('grid') },
+        _defTick: dsColor, _defTitle: dsColor,
       };
     });
 
@@ -4220,6 +4305,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
           title: { display: true, text: label, color: diffColor },
           ticks: { color: diffColor },
           grid: { drawOnChartArea: false },
+          _defTick: diffColor, _defTitle: diffColor,
         };
         chart.update();
         diffDiv.style.display = 'none';
@@ -4336,10 +4422,11 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
           segment: {
             borderColor: function(ctx) {
               const lo = ctx.chart._thLo, hi = ctx.chart._thHi;
-              if (lo === undefined || hi === undefined) return color;
+              const base = ctx.chart.data.datasets[ctx.datasetIndex].borderColor;  // 跟著自訂軸色走
+              if (lo === undefined || hi === undefined) return base;
               const y0 = ctx.p0.parsed.y, y1 = ctx.p1.parsed.y;
               if (y0 < lo || y1 < lo || y0 > hi || y1 > hi) return '#ff453a';
-              return color;
+              return base;
             },
             borderWidth: function(ctx) {
               const lo = ctx.chart._thLo, hi = ctx.chart._thHi;
@@ -4380,6 +4467,7 @@ function buildCharts(times, series, labels, numericCols, headers, timeCol) {
               title: { display: true, text: unit, color: color },
               ticks: { color: color },
               grid: { color: ct('grid') },
+              _defTick: color, _defTitle: color,
             },
           },
         },
